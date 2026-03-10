@@ -1,0 +1,14 @@
+# Build on top of the already-existing local claude-code-sandbox image.
+# Use this when Docker Hub / mirrors are unreachable:
+#   docker build -f Dockerfile.patch -t claude-code-sandbox .
+
+FROM claude-code-sandbox:latest
+
+USER root
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+USER claude
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

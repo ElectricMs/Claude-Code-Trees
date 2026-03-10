@@ -1,0 +1,12 @@
+{
+  "tasks": [
+    {
+      "prompt": "分析这个代码库的错误处理模式，列出潜在问题和改进建议",
+      "repo": "./test/sample-repo"
+    },
+    {
+      "promptFile": "your-prompt-file.md",
+      "repo": "./test/sample-repo"
+    }
+  ]
+}

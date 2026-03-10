@@ -1,0 +1,14 @@
+# 使用镜像源拉取 base image（适用于 Docker Hub 访问受限环境）
+# 构建: docker build -f Dockerfile.mirror -t claude-code-sandbox .
+#
+# 若此镜像也不可用，推荐在 Docker Desktop Settings → Docker Engine 中配置：
+# "registry-mirrors": ["https://hub-mirror.c.163.com", "https://mirror.ccs.tencentyun.com"]
+# 配置后使用原始 Dockerfile 即可。
+
+FROM hub-mirror.c.163.com/library/node:20-slim
+
+RUN npm install -g @anthropic-ai/claude-code
+
+WORKDIR /workspace
+
+ENTRYPOINT ["claude"]

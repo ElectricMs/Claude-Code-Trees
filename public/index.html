@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code Trees</title>
+<script src="/vendor/marked.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #f8fafc; --bg-card: #ffffff; --bg-hover: #f1f5f9; --bg-inset: #f1f5f9;
+    --border: #e2e8f0; --border-light: #f1f5f9;
+    --text: #1e293b; --text-secondary: #475569; --text-muted: #94a3b8; --text-faint: #cbd5e1;
+    --blue-50: #eff6ff; --blue-100: #dbeafe; --blue-500: #3b82f6; --blue-600: #2563eb; --blue-700: #1d4ed8;
+    --green-50: #f0fdf4; --green-100: #dcfce7; --green-600: #16a34a; --green-700: #15803d;
+    --yellow-50: #fefce8; --yellow-100: #fef9c3; --yellow-600: #ca8a04; --yellow-700: #a16207;
+    --red-50: #fef2f2; --red-100: #fee2e2; --red-600: #dc2626; --red-700: #b91c1c;
+    --gray-50: #f8fafc; --gray-100: #f1f5f9; --gray-200: #e2e8f0; --gray-300: #cbd5e1;
+    --gray-500: #64748b; --gray-600: #475569; --gray-700: #334155; --gray-800: #1e293b;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.05); --shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+  }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; font-size: 14px; line-height: 1.5; }
+
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot-green { background: #22c55e; } .dot-red { background: #ef4444; }
+  .dot-yellow { background: #eab308; } .dot-gray { background: #94a3b8; }
+
+  header { background: var(--bg-card); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; justify-content: space-between; box-shadow: var(--shadow-sm); }
+  header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.025em; color: var(--text); }
+  .header-right { display: flex; align-items: center; gap: 16px; font-size: 13px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 24px; }
+
+  .btn { padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 500; border: none; cursor: pointer; color: white; transition: all 0.15s; display: inline-block; }
+  .btn-blue { background: var(--blue-600); } .btn-blue:hover { background: var(--blue-700); }
+  .btn-yellow { background: var(--yellow-600); } .btn-yellow:hover { background: var(--yellow-700); }
+  .btn-green { background: var(--green-600); } .btn-green:hover { background: var(--green-700); }
+  .btn-red { background: var(--red-600); } .btn-red:hover { background: var(--red-700); }
+  .btn-sm { padding: 2px 8px; font-size: 12px; border-radius: 4px; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-ghost { background: none; color: var(--text-secondary); } .btn-ghost:hover { color: var(--text); }
+  .btn-outline { background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border); }
+  .btn-outline:hover { background: var(--bg-hover); color: var(--text); }
+
+  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; box-shadow: var(--shadow-sm); }
+  .stat-label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500; }
+  .stat-value { font-size: 24px; font-weight: 700; margin-top: 4px; }
+  .c-yellow { color: var(--yellow-600); } .c-blue { color: var(--blue-600); }
+  .c-green { color: var(--green-600); } .c-red { color: var(--red-600); }
+  .c-muted { color: var(--text-muted); } .c-secondary { color: var(--text-secondary); }
+  .c-blue-link { color: var(--blue-600); }
+
+  .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow-sm); }
+  .card-header { padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--gray-50); }
+  .card-header h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+  .card-body { padding: 16px; }
+
+  .worker-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: var(--bg-inset); border: 1px solid var(--border-light); border-radius: 6px; font-size: 13px; }
+  .worker-row + .worker-row { margin-top: 8px; }
+  .w-label { color: var(--text); width: 76px; flex-shrink: 0; font-weight: 500; }
+  .flex-1 { flex: 1; }
+  .mono { font-family: "SF Mono", Menlo, monospace; }
+  .text-xs { font-size: 12px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead tr { border-bottom: 1px solid var(--border); }
+  thead { background: var(--gray-50); }
+  th { padding: 8px 16px; text-align: left; color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  td { padding: 8px 16px; }
+  tbody tr { border-bottom: 1px solid var(--border-light); transition: background 0.1s; }
+  tbody tr:hover { background: var(--bg-hover); }
+  .badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; display: inline-block; }
+  .badge-pending { background: var(--yellow-100); color: var(--yellow-700); }
+  .badge-running { background: var(--blue-100); color: var(--blue-700); }
+  .badge-completed { background: var(--green-100); color: var(--green-700); }
+  .badge-failed { background: var(--red-100); color: var(--red-700); }
+  .badge-cancelled { background: var(--gray-200); color: var(--gray-500); }
+  .truncate-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; color: var(--text); }
+  .actions-cell { white-space: nowrap; }
+  .actions-cell .btn + .btn { margin-left: 4px; }
+
+  .result-section { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; box-shadow: var(--shadow-sm); }
+  .result-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .result-header h2 { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+  .close-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 20px; line-height: 1; padding: 0 4px; } .close-btn:hover { color: var(--text); }
+  .result-panel { font-size: 13px; line-height: 1.7; color: var(--text); }
+  .result-panel pre { background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+  .result-panel code { font-size: 13px; font-family: "SF Mono", Menlo, monospace; }
+  .result-panel > code, .result-panel p code { background: var(--gray-100); color: var(--red-600); padding: 1px 4px; border-radius: 3px; }
+  .result-panel table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  .result-panel th, .result-panel td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  .result-panel th { background: var(--gray-50); color: var(--text-secondary); font-weight: 600; }
+  .result-panel h1, .result-panel h2, .result-panel h3 { margin: 16px 0 8px; font-weight: 600; color: var(--text); }
+  .result-panel h2 { font-size: 16px; } .result-panel h3 { font-size: 14px; }
+  .result-panel p { margin: 8px 0; }
+  .result-panel ul, .result-panel ol { padding-left: 20px; margin: 8px 0; }
+  .result-panel li { margin: 4px 0; }
+  .result-panel strong { color: var(--gray-800); }
+  .result-panel blockquote { border-left: 3px solid var(--blue-500); padding-left: 12px; margin: 8px 0; color: var(--text-secondary); }
+
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; z-index: 50; backdrop-filter: blur(2px); }
+  .modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; width: 100%; max-width: 480px; margin: 16px; padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
+  .modal h3 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: var(--text); }
+  .form-group { margin-bottom: 16px; }
+  .form-group label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; font-weight: 500; }
+  .input, .modal textarea, .modal select { width: 100%; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 13px; color: var(--text); outline: none; font-family: inherit; }
+  .input:focus, .modal textarea:focus, .modal select:focus { border-color: var(--blue-500); box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
+  .modal textarea { resize: none; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 8px; }
+  .hint { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+  .drop-zone { border: 2px dashed var(--border); border-radius: 8px; padding: 24px; text-align: center; cursor: pointer; transition: all 0.15s; color: var(--text-muted); font-size: 13px; background: var(--gray-50); }
+  .drop-zone:hover { border-color: var(--blue-500); background: var(--blue-50); color: var(--text-secondary); }
+  .drag-over { border-color: var(--blue-500) !important; background: var(--blue-50) !important; }
+
+  .fade-in { animation: fadeIn 0.2s ease-in; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  .hidden { display: none !important; }
+  .conn-btn { cursor: pointer; display: flex; align-items: center; gap: 8px; }
+  .conn-btn:hover .conn-label { color: var(--text); }
+  .conn-label { color: var(--text-muted); transition: color 0.15s; }
+
+  @media (max-width: 640px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Claude Code Trees</h1>
+  <div class="header-right">
+    <button id="btnPause" onclick="togglePause()" class="btn btn-yellow">暂停</button>
+    <button onclick="killAll()" class="btn btn-red">终止全部</button>
+    <div class="conn-btn" onclick="editConnection()">
+      <span id="connDot" class="status-dot dot-gray"></span>
+      <span id="connLabel" class="conn-label">连接中...</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- Status Cards -->
+<div class="stats-grid" id="statusCards">
+  <div class="stat-card">
+    <div class="stat-label">等待</div>
+    <div id="statPending" class="stat-value c-yellow">0</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">运行中</div>
+    <div id="statRunning" class="stat-value c-blue">0</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">完成</div>
+    <div id="statCompleted" class="stat-value c-green">0</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">失败</div>
+    <div id="statFailed" class="stat-value c-red">0</div>
+  </div>
+</div>
+
+<!-- Workers -->
+<section class="card">
+  <div class="card-header"><h2>Worker 状态</h2></div>
+  <div class="card-body" id="workersContainer">
+    <div class="c-muted">加载中...</div>
+  </div>
+</section>
+
+<!-- Add Task -->
+<div>
+  <button onclick="openAddTask()" class="btn btn-blue">+ 添加任务</button>
+</div>
+
+<!-- Task List -->
+<section class="card">
+  <div class="card-header"><h2>任务列表</h2></div>
+  <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>状态</th>
+          <th>提示词</th>
+          <th>耗时</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="taskTableBody">
+        <tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-muted)">暂无任务</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Result Panel -->
+<section id="resultPanel" class="result-section hidden fade-in">
+  <div class="result-header">
+    <h2>结果 <span id="resultTaskId" class="c-blue-link"></span></h2>
+    <button onclick="closeResult()" class="close-btn">&times;</button>
+  </div>
+  <div id="resultContent" class="result-panel"></div>
+</section>
+
+</main>
+
+<!-- Add Task Modal -->
+<div id="addTaskModal" class="modal-overlay hidden">
+  <div class="modal fade-in">
+    <h3>添加新任务</h3>
+
+    <div class="form-group">
+      <label>代码库 ZIP</label>
+      <div id="dropZone" class="drop-zone" onclick="document.getElementById('fileInput').click()">
+        <input type="file" id="fileInput" accept=".zip" class="hidden" onchange="onFileSelected(this)">
+        <div id="dropLabel">拖拽或点击上传 .zip 文件</div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>提示词</label>
+      <textarea id="promptInput" rows="4" placeholder="分析这个代码库的错误处理模式，列出潜在问题和改进建议"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label>模型（可选）</label>
+      <select id="modelSelect">
+        <option value="">默认 (sonnet)</option>
+        <option value="sonnet">sonnet</option>
+        <option value="haiku">haiku</option>
+        <option value="opus">opus</option>
+      </select>
+    </div>
+
+    <div class="modal-actions">
+      <button onclick="closeAddTask()" class="btn btn-ghost">取消</button>
+      <button id="submitBtn" onclick="submitTask()" class="btn btn-blue" disabled>提交任务</button>
+    </div>
+  </div>
+</div>
+
+<!-- Connection Modal -->
+<div id="connModal" class="modal-overlay hidden">
+  <div class="modal fade-in">
+    <h3>连接设置</h3>
+    <div class="form-group">
+      <label>后端 API 地址</label>
+      <input id="connInput" type="text" class="input" placeholder="留空为当前页面（本地），或输入 http://server-ip:3000">
+      <div class="hint">留空 = 同源访问（本地部署），填写远程地址 = 跨域访问</div>
+    </div>
+    <div class="modal-actions">
+      <button onclick="closeConn()" class="btn btn-ghost">取消</button>
+      <button onclick="saveConn()" class="btn btn-blue">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const api = {
+  baseURL: localStorage.getItem('apiBaseURL') || '',
+
+  async get(path) {
+    const r = await fetch(this.baseURL + path);
+    return r.json();
+  },
+
+  async post(path, body) {
+    const r = await fetch(this.baseURL + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return r.json();
+  },
+
+  async postForm(path, formData) {
+    const r = await fetch(this.baseURL + path, { method: 'POST', body: formData });
+    return r.json();
+  },
+
+  async del(path) {
+    const r = await fetch(this.baseURL + path, { method: 'DELETE' });
+    return r.json();
+  },
+
+  setBaseURL(url) {
+    this.baseURL = url.replace(/\/+$/, '');
+    localStorage.setItem('apiBaseURL', this.baseURL);
+  },
+};
+
+let connected = false;
+let paused = false;
+let tasks = [];
+let expandedTaskId = null;
+let selectedFile = null;
+
+async function poll() {
+  try {
+    const [statusRes, tasksRes] = await Promise.all([
+      api.get('/api/status'),
+      api.get('/api/tasks'),
+    ]);
+
+    if (statusRes.ok) {
+      setConnected(true);
+      const s = statusRes.data;
+      document.getElementById('statPending').textContent = s.queue.pending;
+      document.getElementById('statRunning').textContent = s.queue.running;
+      document.getElementById('statCompleted').textContent = s.queue.completed;
+      document.getElementById('statFailed').textContent = s.queue.failed;
+      paused = s.paused;
+      updatePauseButton();
+      renderWorkers(s.workers);
+    }
+
+    if (tasksRes.ok) {
+      tasks = tasksRes.data;
+      renderTasks(tasks);
+    }
+  } catch {
+    setConnected(false);
+  }
+}
+
+function setConnected(ok) {
+  connected = ok;
+  document.getElementById('connDot').className = 'status-dot ' + (ok ? 'dot-green' : 'dot-red');
+  const base = api.baseURL || location.origin;
+  document.getElementById('connLabel').textContent = ok ? base : '未连接';
+}
+
+function renderWorkers(workers) {
+  const c = document.getElementById('workersContainer');
+  if (!workers || workers.length === 0) {
+    c.innerHTML = '<div class="c-muted">无 Worker</div>';
+    return;
+  }
+  c.innerHTML = workers.map(w => {
+    const statusColors = { idle: 'dot-gray', running: 'dot-green', paused: 'dot-yellow' };
+    const statusLabels = { idle: '空闲', running: '运行中', paused: '已暂停' };
+    const elapsed = w.elapsed ? `${(w.elapsed / 1000).toFixed(1)}s` : '';
+    const prompt = w.taskPrompt ? truncate(w.taskPrompt, 40) : '';
+    const killBtn = w.status === 'running'
+      ? `<button onclick="killWorker(${w.id})" class="btn btn-red btn-sm" style="margin-left:4px">终止</button>`
+      : '';
+    return `<div class="worker-row">
+      <span class="status-dot ${statusColors[w.status] || 'dot-gray'}"></span>
+      <span class="w-label">Worker-${w.id}</span>
+      <span class="c-secondary">${statusLabels[w.status] || w.status}</span>
+      ${w.taskId ? `<span class="c-blue-link mono text-xs">${w.taskId}</span>` : ''}
+      <span class="c-muted text-xs">${escapeHtml(prompt)}</span>
+      ${elapsed ? `<span class="c-muted text-xs">(${elapsed})</span>` : ''}
+      <span class="flex-1"></span>
+      ${killBtn}
+    </div>`;
+  }).join('');
+}
+
+const statusOrder = { running: 0, pending: 1, completed: 2, failed: 3, cancelled: 4 };
+const statusBadge = {
+  pending:   '<span class="badge badge-pending">等待</span>',
+  running:   '<span class="badge badge-running">运行中</span>',
+  completed: '<span class="badge badge-completed">完成</span>',
+  failed:    '<span class="badge badge-failed">失败</span>',
+  cancelled: '<span class="badge badge-cancelled">已取消</span>',
+};
+
+function renderTasks(list) {
+  const sorted = [...list].sort((a, b) => (statusOrder[a.status] ?? 9) - (statusOrder[b.status] ?? 9));
+  const tbody = document.getElementById('taskTableBody');
+
+  if (sorted.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-muted)">暂无任务</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = sorted.map(t => {
+    const id = t.id.replace('task-', '');
+    const duration = t.durationMs ? `${(t.durationMs / 1000).toFixed(1)}s` : '—';
+    const prompt = truncate(t.prompt, 50);
+    let actions = '';
+
+    if (t.status === 'pending') {
+      actions = `<button onclick="cancelTask('${t.id}')" class="btn btn-outline btn-sm">取消</button>`;
+    } else if (t.status === 'completed' || t.status === 'failed') {
+      actions = `
+        <button onclick="viewResult('${t.id}')" class="btn btn-outline btn-sm">查看</button>
+        <button onclick="retryTask('${t.id}')" class="btn btn-yellow btn-sm">重试</button>`;
+    }
+
+    return `<tr>
+      <td class="mono c-muted">${id}</td>
+      <td>${statusBadge[t.status] || t.status}</td>
+      <td class="truncate-cell" title="${escapeHtml(t.prompt)}">${escapeHtml(prompt)}</td>
+      <td class="c-secondary">${duration}</td>
+      <td class="actions-cell">${actions}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function togglePause() {
+  if (paused) {
+    await api.post('/api/workers/resume');
+  } else {
+    await api.post('/api/workers/pause');
+  }
+  paused = !paused;
+  updatePauseButton();
+}
+
+function updatePauseButton() {
+  const btn = document.getElementById('btnPause');
+  if (paused) {
+    btn.textContent = '恢复';
+    btn.className = 'btn btn-green';
+  } else {
+    btn.textContent = '暂停';
+    btn.className = 'btn btn-yellow';
+  }
+}
+
+async function killAll() {
+  if (!confirm('确定要强制终止所有 Worker 当前任务？')) return;
+  await api.post('/api/workers/kill-all');
+}
+
+async function killWorker(id) {
+  await api.post(`/api/workers/${id}/kill`);
+}
+
+async function cancelTask(id) {
+  await api.del(`/api/tasks/${id}`);
+  poll();
+}
+
+async function retryTask(id) {
+  await api.post(`/api/tasks/${id}/retry`);
+  poll();
+}
+
+async function viewResult(taskId) {
+  const res = await api.get(`/api/tasks/${taskId}`);
+  if (!res.ok) return;
+  const task = res.data;
+  document.getElementById('resultTaskId').textContent = '#' + taskId.replace('task-', '');
+
+  let content = '';
+  if (task.result) {
+    content = task.result;
+  } else if (task.error) {
+    content = '**错误：**\n\n```\n' + task.error + '\n```';
+  } else {
+    content = '_无结果_';
+  }
+
+  document.getElementById('resultContent').innerHTML = marked.parse(content);
+  const panel = document.getElementById('resultPanel');
+  panel.classList.remove('hidden');
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  expandedTaskId = taskId;
+}
+
+function closeResult() {
+  document.getElementById('resultPanel').classList.add('hidden');
+  expandedTaskId = null;
+}
+
+function openAddTask() {
+  selectedFile = null;
+  document.getElementById('fileInput').value = '';
+  document.getElementById('dropLabel').textContent = '拖拽或点击上传 .zip 文件';
+  document.getElementById('promptInput').value = '';
+  document.getElementById('modelSelect').value = '';
+  document.getElementById('submitBtn').disabled = true;
+  document.getElementById('addTaskModal').classList.remove('hidden');
+}
+
+function closeAddTask() {
+  document.getElementById('addTaskModal').classList.add('hidden');
+}
+
+function onFileSelected(input) {
+  if (input.files.length > 0) {
+    selectedFile = input.files[0];
+    document.getElementById('dropLabel').innerHTML =
+      `<span style="color:var(--green-600);font-weight:500">${escapeHtml(selectedFile.name)}</span> <span class="c-muted">(${(selectedFile.size / 1024).toFixed(0)} KB)</span>`;
+    checkSubmit();
+  }
+}
+
+function checkSubmit() {
+  const hasFile = !!selectedFile;
+  const hasPrompt = document.getElementById('promptInput').value.trim().length > 0;
+  document.getElementById('submitBtn').disabled = !(hasFile && hasPrompt);
+}
+
+async function submitTask() {
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.textContent = '提交中...';
+
+  const fd = new FormData();
+  fd.append('file', selectedFile);
+  fd.append('prompt', document.getElementById('promptInput').value.trim());
+  const model = document.getElementById('modelSelect').value;
+  if (model) fd.append('model', model);
+
+  try {
+    const res = await api.postForm('/api/tasks', fd);
+    if (res.ok) {
+      closeAddTask();
+      poll();
+    } else {
+      alert('提交失败: ' + (res.error || '未知错误'));
+    }
+  } catch (err) {
+    alert('请求失败: ' + err.message);
+  }
+
+  btn.disabled = false;
+  btn.textContent = '提交任务';
+}
+
+const dropZone = document.getElementById('dropZone');
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  if (e.dataTransfer.files.length > 0) {
+    const f = e.dataTransfer.files[0];
+    if (f.name.endsWith('.zip')) {
+      selectedFile = f;
+      document.getElementById('dropLabel').innerHTML =
+        `<span style="color:var(--green-600);font-weight:500">${escapeHtml(f.name)}</span> <span class="c-muted">(${(f.size / 1024).toFixed(0)} KB)</span>`;
+      checkSubmit();
+    } else {
+      alert('请上传 .zip 文件');
+    }
+  }
+});
+
+document.getElementById('promptInput').addEventListener('input', checkSubmit);
+
+function editConnection() {
+  document.getElementById('connInput').value = api.baseURL;
+  document.getElementById('connModal').classList.remove('hidden');
+}
+
+function closeConn() {
+  document.getElementById('connModal').classList.add('hidden');
+}
+
+function saveConn() {
+  api.setBaseURL(document.getElementById('connInput').value.trim());
+  closeConn();
+  poll();
+}
+
+function truncate(s, n) {
+  return s.length > n ? s.slice(0, n) + '...' : s;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>
