@@ -2,6 +2,8 @@
 
 多 Claude Code 实例并行编排架构，支持在本地或服务器（如 EC2）中运行。每个实例在独立的 Docker 容器中以只读模式分析代码，通过共享持久化任务队列自动分配工作。提供 CLI 和 Web Dashboard 两种操控方式。
 
+代码和README.md未经严格审查。
+
 ## 架构概览
 
 ```
@@ -15,20 +17,20 @@
 │        └──────────┬───────────────────┘                      │
 │                   ▼                                          │
 │          ┌─────────────────┐                                 │
-│          │  data/state.json │  ← 唯一持久化队列              │
-│          │  (TaskQueue)     │                                 │
+│          │  data/state.json │  ← 唯一持久化队列                │
+│          │  (TaskQueue)     │                                │
 │          └────────┬────────┘                                 │
 │                   ▼                                          │
 │          ┌─────────────────┐     data/control.json           │
 │          │   WorkerPool    │ ←── (pause / resume / stop)     │
 │          │  worker 0..N    │                                 │
 │          └───┬────┬────┬───┘                                 │
-│              │    │    │                                      │
-│          ┌───▼┐ ┌▼───┐ ┌▼───┐                               │
-│          │ 🐳 │ │ 🐳 │ │ 🐳 │  Docker 容器 (:ro mount)      │
+│              │    │    │                                     │
+│          ┌───▼┐ ┌▼───┐ ┌▼───┐                                │
+│          │ 🐳 │ │ 🐳 │ │ 🐳 │  Docker 容器 (:ro mount)         │
 │          └────┘ └────┘ └────┘                                │
 │                                                              │
-│         repos/task-NNN/  ← 每个任务的代码库副本               │
+│         repos/task-NNN/  ← 每个任务的代码库副本                 │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -367,6 +369,3 @@ ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5
 node scripts/test-raw-api.js
 ```
 
-## License
-
-MIT
