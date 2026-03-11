@@ -1,0 +1,333 @@
+openapi: 3.0.3
+info:
+  title: Claude Code Trees API
+  description: |
+    多 Claude Code 实例并行编排服务。提供任务队列、Worker 状态查询与控制接口。
+    服务默认地址 http://localhost:3000（可通过 SERVER_HOST、SERVER_PORT 配置）。
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:3000
+    description: 本地默认
+
+tags:
+  - name: 状态与配置
+    description: 队列与配置查询
+  - name: 任务
+    description: 任务的增删改查与重试
+  - name: Worker
+    description: Worker 暂停/恢复/终止
+
+paths:
+  /api/status:
+    get:
+      tags: [状态与配置]
+      summary: 获取队列与 Worker 状态
+      description: 返回当前任务队列统计及所有 Worker 的实时状态。
+      operationId: getStatus
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+
+  /api/config:
+    get:
+      tags: [状态与配置]
+      summary: 获取服务配置
+      description: 返回当前运行时配置（只读）。
+      operationId: getConfig
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigResponse"
+
+  /api/tasks:
+    get:
+      tags: [任务]
+      summary: 获取任务列表
+      description: 返回所有任务；列表中 result 截断为 resultPreview（最多 200 字符），完整结果见 GET /api/tasks/:id。
+      operationId: listTasks
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskListResponse"
+    post:
+      tags: [任务]
+      summary: 创建任务
+      description: 上传代码库 ZIP 与提示词，创建新任务。ZIP 解压到 repos/{task-id}/，ID 自增分配。
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, prompt]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 代码库 ZIP 文件
+                prompt:
+                  type: string
+                  description: 分析指令 / 提示词
+                model:
+                  type: string
+                  description: 覆盖默认模型（如 sonnet、opus）
+      responses:
+        "200":
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetailResponse"
+        "400":
+          description: 缺少 prompt 或未上传 ZIP
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: 解压或写入失败
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/tasks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, example: "task-001" }
+        description: 任务 ID
+    get:
+      tags: [任务]
+      summary: 获取任务详情
+      description: 返回单条任务，含完整 result。不存在返回 404。
+      operationId: getTask
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetailResponse"
+        "404":
+          description: 任务不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    delete:
+      tags: [任务]
+      summary: 取消任务
+      description: 仅可取消状态为 pending 的任务。
+      operationId: cancelTask
+      responses:
+        "200":
+          description: 取消成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+        "400":
+          description: 任务不存在或非 pending
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/tasks/{id}/retry:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, example: "task-001" }
+        description: 任务 ID
+    post:
+      tags: [任务]
+      summary: 重试任务
+      description: 将已完成或失败的任务重置为 pending，清空结果与错误信息后重新入队。
+      operationId: retryTask
+      responses:
+        "200":
+          description: 重试成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetailResponse"
+        "400":
+          description: 任务不存在或状态不可重试
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/workers/pause:
+    post:
+      tags: [Worker]
+      summary: 暂停所有 Worker
+      description: 当前任务会执行完，之后不再从队列取新任务。
+      operationId: pauseWorkers
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+
+  /api/workers/resume:
+    post:
+      tags: [Worker]
+      summary: 恢复 Worker
+      description: 继续从队列取任务。
+      operationId: resumeWorkers
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+
+  /api/workers/{id}/kill:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, example: 0 }
+        description: Worker ID（从 0 开始）
+    post:
+      tags: [Worker]
+      summary: 终止指定 Worker
+      description: 强制终止该 Worker 当前运行的 Docker 容器。
+      operationId: killWorker
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+        "400":
+          description: Worker 未在运行或 ID 无效
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/workers/kill-all:
+    post:
+      tags: [Worker]
+      summary: 终止所有 Worker
+      description: 强制终止所有正在运行任务的 Worker 的 Docker 容器。
+      operationId: killAllWorkers
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+
+components:
+  schemas:
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean, example: true }
+
+    ErrorResponse:
+      type: object
+      required: [ok, error]
+      properties:
+        ok: { type: boolean, example: false }
+        error: { type: string, description: 错误描述 }
+
+    QueueStatus:
+      type: object
+      properties:
+        total: { type: integer, description: 任务总数 }
+        pending: { type: integer, description: 等待中 }
+        running: { type: integer, description: 执行中 }
+        completed: { type: integer, description: 已完成 }
+        failed: { type: integer, description: 失败 }
+        cancelled: { type: integer, description: 已取消 }
+
+    WorkerState:
+      type: object
+      properties:
+        id: { type: integer, description: Worker ID }
+        status:
+          type: string
+          enum: [idle, running, paused]
+          description: idle 空闲 / running 执行中 / paused 已暂停
+        taskId: { type: string, nullable: true, description: 当前任务 ID }
+        taskPrompt: { type: string, nullable: true, description: 当前任务提示词 }
+        elapsed: { type: integer, nullable: true, description: 当前任务已运行毫秒数 }
+
+    StatusResponse:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean, example: true }
+        data:
+          type: object
+          required: [queue, workers, paused]
+          properties:
+            queue: { $ref: "#/components/schemas/QueueStatus" }
+            workers:
+              type: array
+              items: { $ref: "#/components/schemas/WorkerState" }
+            paused: { type: boolean, description: 是否已暂停 }
+
+    ConfigData:
+      type: object
+      properties:
+        model: { type: string, example: "sonnet" }
+        concurrency: { type: integer, example: 2 }
+        timeoutMs: { type: integer, example: 300000 }
+        dockerImage: { type: string, example: "claude-code-sandbox" }
+        allowedTools: { type: string, example: "Read,Grep,Glob,LS" }
+
+    ConfigResponse:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean, example: true }
+        data: { $ref: "#/components/schemas/ConfigData" }
+
+    TaskSummary:
+      type: object
+      properties:
+        id: { type: string, example: "task-001" }
+        prompt: { type: string }
+        repo: { type: string }
+        model: { type: string, nullable: true }
+        status:
+          type: string
+          enum: [pending, running, completed, failed, cancelled]
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        durationMs: { type: integer, nullable: true }
+        resultPreview: { type: string, nullable: true, description: 列表接口中 result 的截断预览 }
+        result: { type: string, nullable: true, description: 完整结果（仅详情接口） }
+        error: { type: string, nullable: true, description: 失败时的错误信息 }
+
+    TaskListResponse:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean, example: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/TaskSummary" }
+
+    TaskDetailResponse:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean, example: true }
+        data: { $ref: "#/components/schemas/TaskSummary" }
