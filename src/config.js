@@ -42,6 +42,8 @@ export function loadConfig(cliOpts = {}) {
     allowedTools: process.env.ALLOWED_TOOLS || "Read,Grep,Glob,LS",
     // API_TIMEOUT_MS for proxies like BigModel that need longer timeouts
     apiTimeoutMs: process.env.API_TIMEOUT_MS || "",
+    // Base URL for the callback endpoint used by /api/tasks/sse
+    callbackBaseUrl: process.env.CALLBACK_BASE_URL || "",
   });
 
   return config;

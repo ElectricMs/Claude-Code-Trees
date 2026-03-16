@@ -4,10 +4,10 @@
  * 端到端测试：向指定代码库发送提示词，接收 Claude Code 回复。
  *
  * 用法:
- *   node scripts/test-task.js                          # 使用默认 sample-repo + 默认提示词
- *   node scripts/test-task.js --repo sample-repo       # 指定代码库
- *   node scripts/test-task.js --prompt "列出所有函数"   # 指定提示词
- *   node scripts/test-task.js --repo my-project --prompt "分析错误处理"
+ *   node test/test-task.js                          # 使用默认 sample-repo + 默认提示词
+ *   node test/test-task.js --repo sample-repo       # 指定代码库
+ *   node test/test-task.js --prompt "列出所有函数"   # 指定提示词
+ *   node test/test-task.js --repo my-project --prompt "分析错误处理"
  */
 
 import { loadConfig } from "../src/config.js";
@@ -54,13 +54,13 @@ async function main() {
 
   const task = {
     id: `test-${Date.now()}`,
-    repo,
+    repoId: repo,
     prompt,
     model: model || config.model,
     timeoutMs,
   };
 
-  console.log(`  代码库:  repos/${task.repo}`);
+  console.log(`  代码库:  repos/${task.repoId}`);
   console.log(`  模型:    ${task.model}`);
   console.log(`  超时:    ${task.timeoutMs / 1000}s`);
   console.log(`  提示词:  ${task.prompt}`);

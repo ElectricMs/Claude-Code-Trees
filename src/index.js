@@ -2,12 +2,10 @@
 
 import { Command } from "commander";
 import { resolve } from "node:path";
-import { writeFileSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { loadConfig, validateConfig } from "./config.js";
+import { rmSync, mkdirSync } from "node:fs";
+import { loadConfig } from "./config.js";
 import { TaskQueue } from "./task-queue.js";
-import { orchestrate } from "./orchestrator.js";
-import { writeControlFile } from "./worker-pool.js";
 
 const DATA_DIR = resolve(process.cwd(), "data");
 
@@ -22,24 +20,78 @@ program
   .description("Multi-agent parallel orchestration for Claude Code with Docker isolation")
   .option("--env-file <path>", "Path to .env file", ".env");
 
+// ─── repo add ────────────────────────────────────────────
+program
+  .command("repo-add")
+  .description("Add a code repository from a local directory")
+  .requiredOption("--path <dir>", "Path to the code repository directory")
+  .option("--name <name>", "Optional display name for the repo")
+  .action((opts) => {
+    try {
+      const config = loadConfig({ envFile: program.opts().envFile });
+      const queue = createQueue(config);
+      const repo = queue.addRepoFromPath({ repoPath: opts.path, name: opts.name });
+      console.log(`\n  ✓ ${repo.id} created (name: ${repo.name})`);
+      console.log(`    Directory: repos/${repo.id}/\n`);
+    } catch (err) {
+      console.error(`\n  ✗ ${err.message}\n`);
+      process.exit(1);
+    }
+  });
+
+// ─── repo list ───────────────────────────────────────────
+program
+  .command("repo-list")
+  .description("List all code repositories")
+  .action(() => {
+    try {
+      const config = loadConfig({ envFile: program.opts().envFile });
+      const queue = createQueue(config);
+      const repos = queue.getAllRepos();
+
+      if (repos.length === 0) {
+        console.log("\n  No repositories registered.\n");
+        return;
+      }
+
+      console.log("\n=== Repositories ===\n");
+      for (const r of repos) {
+        console.log(`  ${r.id}  ${r.name}  (${r.createdAt})`);
+      }
+      console.log();
+    } catch (err) {
+      console.error(`\n  ✗ ${err.message}\n`);
+      process.exit(1);
+    }
+  });
+
 // ─── add ──────────────────────────────────────────────────
 program
   .command("add")
   .description("Add a single task to the queue")
-  .requiredOption("--repo <path>", "Path to the code repository (any local directory)")
+  .requiredOption("--repo <id-or-path>", "Repo ID (repo-XXX) or local directory path")
   .requiredOption("--prompt <text>", "Prompt / instructions for Claude Code")
   .option("--model <model>", "Model override (sonnet/haiku/opus)")
   .action((opts) => {
     try {
       const config = loadConfig({ envFile: program.opts().envFile });
       const queue = createQueue(config);
+
+      let repoId = opts.repo;
+
+      // If it doesn't look like a repo ID, treat it as a local path
+      if (!repoId.startsWith("repo-")) {
+        const repo = queue.addRepoFromPath({ repoPath: opts.repo });
+        console.log(`  ✓ Created repo ${repo.id} from ${opts.repo}`);
+        repoId = repo.id;
+      }
+
       const task = queue.addTask({
         prompt: opts.prompt,
-        repoPath: opts.repo,
+        repoId,
         model: opts.model,
       });
-      console.log(`\n  ✓ ${task.id} created`);
-      console.log(`    Repo copied to repos/${task.repo}/`);
+      console.log(`\n  ✓ ${task.id} created (repo: ${task.repoId})`);
       console.log(`    Prompt: ${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? "..." : ""}\n`);
     } catch (err) {
       console.error(`\n  ✗ ${err.message}\n`);
@@ -64,31 +116,6 @@ program
     }
   });
 
-// ─── run ──────────────────────────────────────────────────
-program
-  .command("run")
-  .description("Start agent workers to process pending tasks until the queue is empty")
-  .option("-c, --concurrency <n>", "Number of parallel workers")
-  .option("-m, --model <model>", "Default Claude model to use")
-  .option("--timeout <ms>", "Timeout per task in milliseconds")
-  .action(async (opts) => {
-    try {
-      const config = loadConfig({
-        envFile: program.opts().envFile,
-        concurrency: opts.concurrency,
-        model: opts.model,
-        timeout: opts.timeout,
-      });
-      const queue = createQueue(config);
-      validateConfig(config);
-      const { status } = await orchestrate(queue, config);
-      process.exit(status.failed > 0 ? 1 : 0);
-    } catch (err) {
-      console.error(`\n  ✗ ${err.message}\n`);
-      process.exit(2);
-    }
-  });
-
 // ─── status ───────────────────────────────────────────────
 program
   .command("status")
@@ -98,6 +125,7 @@ program
       const config = loadConfig({ envFile: program.opts().envFile });
       const queue = createQueue(config);
       const s = queue.getStatus();
+      const repos = queue.getAllRepos();
 
       console.log("\n=== Queue Status ===\n");
       console.log(`  Total     : ${s.total}`);
@@ -106,6 +134,7 @@ program
       console.log(`  Completed : ${s.completed}`);
       console.log(`  Failed    : ${s.failed}`);
       console.log(`  Cancelled : ${s.cancelled}`);
+      console.log(`  Repos     : ${repos.length}`);
 
       try {
         const containers = execFileSync("docker", [
@@ -130,57 +159,47 @@ program
     }
   });
 
-// ─── pause ────────────────────────────────────────────────
+// ─── purge ───────────────────────────────────────────────
 program
-  .command("pause")
-  .description("Pause workers (they finish current tasks then idle)")
-  .action(() => {
-    writeControlFile("pause");
-    console.log("\n  ✓ Pause signal sent (workers will idle after current tasks)\n");
-  });
+  .command("purge")
+  .description("Purge all runtime data: results, repos, task queue and reset all ID counters")
+  .option("--force", "Skip confirmation prompt")
+  .action(async (opts) => {
+    try {
+      const config = loadConfig({ envFile: program.opts().envFile });
+      const queue = createQueue(config);
+      const s = queue.getStatus();
+      const repoCount = queue.getAllRepos().length;
 
-// ─── resume ───────────────────────────────────────────────
-program
-  .command("resume")
-  .description("Resume paused workers")
-  .action(() => {
-    writeControlFile("resume");
-    console.log("\n  ✓ Resume signal sent\n");
-  });
+      if (s.running > 0) {
+        console.error(`\n  ✗ Cannot purge: ${s.running} task(s) still running.\n`);
+        process.exit(1);
+      }
 
-// ─── kill ─────────────────────────────────────────────────
-program
-  .command("kill")
-  .description("Force-stop workers and their Docker containers")
-  .option("--all", "Kill all Claude containers")
-  .option("--worker <id>", "Kill a specific worker's container by ID")
-  .action((opts) => {
-    if (opts.all) {
-      writeControlFile("stop");
-      try {
-        const output = execFileSync("docker", [
-          "ps", "-q", "--filter", "name=claude-",
-        ]).toString().trim();
-        if (output) {
-          const ids = output.split("\n").filter(Boolean);
-          execFileSync("docker", ["kill", ...ids]);
-          console.log(`\n  ✓ Killed ${ids.length} container(s) + stop signal sent\n`);
-        } else {
-          console.log("\n  ✓ Stop signal sent (no active containers found)\n");
+      if (!opts.force) {
+        const { createInterface } = await import("node:readline");
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await new Promise((r) =>
+          rl.question(`\n  This will delete ${s.total} task(s), ${repoCount} repo(s) and all results. Continue? [y/N] `, r),
+        );
+        rl.close();
+        if (answer.trim().toLowerCase() !== "y") {
+          console.log("  Aborted.\n");
+          return;
         }
-      } catch {
-        console.log("\n  ✓ Stop signal sent (could not list/kill containers)\n");
       }
-    } else if (opts.worker !== undefined) {
-      const name = `claude-worker-${opts.worker}`;
-      try {
-        execFileSync("docker", ["kill", name]);
-        console.log(`\n  ✓ Killed container ${name}\n`);
-      } catch {
-        console.log(`\n  ✗ Container ${name} not found or already stopped\n`);
-      }
-    } else {
-      console.log("\n  Specify --all or --worker <id>\n");
+
+      queue.purge();
+      rmSync(config.reposBaseDir, { recursive: true, force: true });
+      mkdirSync(config.reposBaseDir, { recursive: true });
+      rmSync(config.resultsDir, { recursive: true, force: true });
+      mkdirSync(config.resultsDir, { recursive: true });
+
+      console.log("\n  ✓ Purged all tasks, repos and results.");
+      console.log("  ✓ All ID counters reset to 1.\n");
+    } catch (err) {
+      console.error(`\n  ✗ ${err.message}\n`);
+      process.exit(1);
     }
   });
 

@@ -12,7 +12,8 @@
     "serve": "node src/server.js",
     "docker:build": "docker build -t claude-code-sandbox .",
     "docker:build:patch": "docker build -f Dockerfile.patch -t claude-code-sandbox .",
-    "test:api": "node scripts/test-api.js"
+    "test:api": "node test/test-api.js",
+    "test:callback": "node test/callback-server.js"
   },
   "dependencies": {
     "commander": "^13.1.0",

@@ -1,16 +1,14 @@
 import { EventEmitter } from "node:events";
-import { writeFileSync, mkdirSync, readFileSync, existsSync, unlinkSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { runClaude, forceRemoveContainer } from "./claude-runner.js";
+import { runClaude, runClaudeStreaming, forceRemoveContainer } from "./claude-runner.js";
 import { execFile } from "node:child_process";
-
-const CONTROL_FILE = resolve(process.cwd(), "data", "control.json");
 
 /**
  * Persistent worker pool that continuously processes tasks from a queue.
- * Supports pause/resume, force-kill, control-file polling, and exitOnEmpty.
+ * Supports pause/resume and force-kill via HTTP API.
  *
- * Events: 'task:complete', 'task:fail', 'worker:idle', 'worker:busy', 'empty'
+ * Events: 'task:complete', 'task:fail', 'worker:idle', 'worker:busy'
  */
 export class WorkerPool extends EventEmitter {
   #queue;
@@ -18,8 +16,8 @@ export class WorkerPool extends EventEmitter {
   #workers = [];
   #paused = false;
   #running = false;
-  #exitOnEmpty = false;
-  #doneResolve = null;
+  /** @type {Map<string, { onData: Function|null, resolve: Function, reject: Function }>} */
+  #streamListeners = new Map();
 
   constructor(queue, config) {
     super();
@@ -34,17 +32,11 @@ export class WorkerPool extends EventEmitter {
   /**
    * Start N persistent worker loops.
    * @param {number} concurrency
-   * @param {{ exitOnEmpty?: boolean }} opts
-   *   exitOnEmpty: when true, pool stops automatically once all workers are
-   *   idle and no pending tasks remain. The returned promise resolves at that point.
    */
-  start(concurrency, { exitOnEmpty = false } = {}) {
-    if (this.#running) return Promise.resolve();
+  start(concurrency) {
+    if (this.#running) return;
     this.#running = true;
     this.#paused = false;
-    this.#exitOnEmpty = exitOnEmpty;
-
-    clearControlFile();
 
     for (let i = 0; i < concurrency; i++) {
       const worker = {
@@ -59,13 +51,6 @@ export class WorkerPool extends EventEmitter {
       this.#workers.push(worker);
       worker._loop = this.#workerLoop(worker);
     }
-
-    if (exitOnEmpty) {
-      return new Promise((resolve) => {
-        this.#doneResolve = resolve;
-      });
-    }
-    return Promise.resolve();
   }
 
   pause() {
@@ -108,43 +93,29 @@ export class WorkerPool extends EventEmitter {
     await Promise.all(this.#workers.map((w) => w._loop).filter(Boolean));
   }
 
-  /** Check data/control.json for external commands (pause/resume/stop). */
-  #checkControlFile() {
-    try {
-      if (!existsSync(CONTROL_FILE)) return;
-      const raw = readFileSync(CONTROL_FILE, "utf-8");
-      unlinkSync(CONTROL_FILE);
-      const cmd = JSON.parse(raw);
-      switch (cmd.action) {
-        case "pause":
-          console.log("[WorkerPool] Received control: pause");
-          this.#paused = true;
-          break;
-        case "resume":
-          console.log("[WorkerPool] Received control: resume");
-          this.#paused = false;
-          break;
-        case "stop":
-          console.log("[WorkerPool] Received control: stop");
-          this.#running = false;
-          break;
-      }
-    } catch { /* ignore read/parse errors on the control file */ }
+  /**
+   * Register a stream listener and wait for a task to be processed.
+   * The worker that picks up this task will use streaming mode (stream-json)
+   * and call onData(line) for each stdout line, enabling real-time SSE forwarding.
+   *
+   * Resolves when the task finishes (caller should read queue for final status).
+   * Rejects if cancelAwait() is called before the task completes.
+   */
+  awaitTask(taskId, { onData } = {}) {
+    return new Promise((resolve, reject) => {
+      this.#streamListeners.set(taskId, { onData: onData || null, resolve, reject });
+    });
   }
 
-  /** Check if all workers idle + no pending tasks -> resolve exitOnEmpty promise. */
-  #checkEmpty() {
-    if (!this.#exitOnEmpty) return;
-    const allIdle = this.#workers.every((w) => w.status === "idle");
-    if (!allIdle) return;
-    const status = this.#queue.getStatus();
-    if (status.pending === 0 && status.running === 0) {
-      this.#running = false;
-      this.emit("empty");
-      if (this.#doneResolve) {
-        this.#doneResolve();
-        this.#doneResolve = null;
-      }
+  /**
+   * Cancel a pending awaitTask listener. Does NOT cancel the task itself —
+   * if a worker already picked it up, it will finish normally (without streaming).
+   */
+  cancelAwait(taskId) {
+    const listener = this.#streamListeners.get(taskId);
+    if (listener) {
+      this.#streamListeners.delete(taskId);
+      listener.reject(new Error("Stream cancelled"));
     }
   }
 
@@ -152,8 +123,6 @@ export class WorkerPool extends EventEmitter {
     const log = (msg) => console.log(`[worker-${worker.id}] ${msg}`);
 
     while (this.#running) {
-      this.#checkControlFile();
-
       if (this.#paused) {
         await sleep(500);
         continue;
@@ -161,8 +130,6 @@ export class WorkerPool extends EventEmitter {
 
       const task = this.#queue.dequeue();
       if (!task) {
-        this.#checkEmpty();
-        if (!this.#running) break;
         await sleep(500);
         continue;
       }
@@ -174,13 +141,25 @@ export class WorkerPool extends EventEmitter {
       worker.containerName = null;
       this.emit("worker:busy", worker.id, task.id);
 
-      log(`Starting task ${task.id} (repo: ${task.repo})`);
+      log(`Starting task ${task.id} (repo: ${task.repoId})`);
+
+      const listener = this.#streamListeners.get(task.id);
+      const streaming = !!listener?.onData;
 
       let claudeResult;
       try {
-        claudeResult = await runClaude(task, this.#config, {
-          workerId: String(worker.id),
-        });
+        if (streaming) {
+          claudeResult = await runClaudeStreaming(task, this.#config, {
+            workerId: String(worker.id),
+            onData: (line) => {
+              try { listener.onData(line); } catch { /* SSE handler may be gone */ }
+            },
+          });
+        } else {
+          claudeResult = await runClaude(task, this.#config, {
+            workerId: String(worker.id),
+          });
+        }
         worker.containerName = claudeResult.containerName;
 
         if (claudeResult.timedOut) {
@@ -192,11 +171,16 @@ export class WorkerPool extends EventEmitter {
           this.#queue.fail(task.id, claudeResult.stderr || `Exit code ${claudeResult.exitCode}`);
           this.emit("task:fail", task.id);
         } else {
-          let parsed = claudeResult.stdout;
-          try {
-            const json = JSON.parse(claudeResult.stdout);
-            if (json?.result) parsed = json.result;
-          } catch { /* keep raw */ }
+          let parsed;
+          if (streaming) {
+            parsed = extractResultFromStreamJson(claudeResult.stdout);
+          } else {
+            parsed = claudeResult.stdout;
+            try {
+              const json = JSON.parse(claudeResult.stdout);
+              if (json?.result) parsed = json.result;
+            } catch { /* keep raw */ }
+          }
           log(`Task ${task.id} completed in ${(claudeResult.durationMs / 1000).toFixed(1)}s`);
           this.#queue.complete(task.id, parsed);
           this.emit("task:complete", task.id);
@@ -207,6 +191,13 @@ export class WorkerPool extends EventEmitter {
         log(`Task ${task.id} error: ${err.message}`);
         this.#queue.fail(task.id, err.message);
         this.emit("task:fail", task.id);
+      }
+
+      // Resolve stream listener (may already be cancelled via cancelAwait — that's fine)
+      const pending = this.#streamListeners.get(task.id);
+      if (pending) {
+        this.#streamListeners.delete(task.id);
+        pending.resolve();
       }
 
       if (claudeResult?.containerName) {
@@ -235,7 +226,7 @@ export class WorkerPool extends EventEmitter {
         taskId: task.id,
         status: claudeResult.timedOut ? "timeout" : claudeResult.exitCode === 0 ? "completed" : "failed",
         prompt: task.prompt,
-        repo: task.repo,
+        repoId: task.repoId,
         result: parsedResult,
         error: claudeResult.exitCode !== 0 ? claudeResult.stderr : undefined,
         workerId: `worker-${workerId}`,
@@ -262,17 +253,21 @@ function dockerKill(containerName) {
   });
 }
 
-function clearControlFile() {
-  try {
-    if (existsSync(CONTROL_FILE)) unlinkSync(CONTROL_FILE);
-  } catch { /* ignore */ }
+/**
+ * Extract the final result text from stream-json stdout.
+ * stream-json outputs one JSON object per line; the last "result" line
+ * contains { type: "result", result: "full text", ... }.
+ */
+function extractResultFromStreamJson(stdout) {
+  const lines = stdout.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    try {
+      const obj = JSON.parse(line);
+      if (obj.type === "result" && obj.result != null) return obj.result;
+    } catch { /* not JSON */ }
+  }
+  return stdout;
 }
 
-/**
- * Write a control command for an external WorkerPool process to pick up.
- * Used by CLI pause/resume/kill commands.
- */
-export function writeControlFile(action) {
-  mkdirSync(resolve(process.cwd(), "data"), { recursive: true });
-  writeFileSync(CONTROL_FILE, JSON.stringify({ action, ts: new Date().toISOString() }));
-}

@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, statSync, rmSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
 const Status = Object.freeze({
@@ -12,13 +12,15 @@ const Status = Object.freeze({
 export { Status };
 
 /**
- * Persistent task queue backed by data/state.json with auto-incrementing IDs.
+ * Persistent task queue + repo registry backed by data/state.json.
  *
  * Construction: `new TaskQueue({ dataDir, reposBaseDir })`
  */
 export class TaskQueue {
   #tasks = [];
-  #nextId = 1;
+  #repos = [];
+  #nextTaskId = 1;
+  #nextRepoId = 1;
   #statePath = null;
   #reposBaseDir = "";
 
@@ -26,12 +28,8 @@ export class TaskQueue {
    * @param {{ dataDir: string, reposBaseDir: string }} opts
    */
   constructor({ dataDir, reposBaseDir } = {}) {
-    if (!reposBaseDir) {
-      throw new Error("TaskQueue requires reposBaseDir");
-    }
-    if (!dataDir) {
-      throw new Error("TaskQueue requires dataDir");
-    }
+    if (!reposBaseDir) throw new Error("TaskQueue requires reposBaseDir");
+    if (!dataDir) throw new Error("TaskQueue requires dataDir");
 
     this.#reposBaseDir = resolve(reposBaseDir);
     mkdirSync(dataDir, { recursive: true });
@@ -40,7 +38,9 @@ export class TaskQueue {
 
     if (existsSync(this.#statePath)) {
       const raw = JSON.parse(readFileSync(this.#statePath, "utf-8"));
-      this.#nextId = raw.nextId || 1;
+      this.#nextTaskId = raw.nextTaskId || raw.nextId || 1;
+      this.#nextRepoId = raw.nextRepoId || 1;
+      this.#repos = raw.repos || [];
       this.#tasks = (raw.tasks || []).map((t) => ({
         ...t,
         status: t.status === Status.RUNNING ? Status.PENDING : t.status,
@@ -56,43 +56,110 @@ export class TaskQueue {
     return this.#reposBaseDir;
   }
 
-  #generateId() {
-    const num = this.#nextId++;
+  // ─── Repo Management ─────────────────────────────────────────
+
+  #generateRepoId() {
+    const num = this.#nextRepoId++;
+    return `repo-${String(num).padStart(3, "0")}`;
+  }
+
+  /**
+   * Register a new repo entry. The caller is responsible for placing files
+   * into `reposBaseDir/<id>/` before or after calling this.
+   *
+   * @param {{ name?: string }} opts
+   * @returns {object} the created repo record
+   */
+  addRepo({ name } = {}) {
+    const id = this.#generateRepoId();
+    const repo = {
+      id,
+      name: name || id,
+      createdAt: new Date().toISOString(),
+    };
+    this.#repos.push(repo);
+    this.#persist();
+    return repo;
+  }
+
+  /**
+   * Register a repo from a local directory path (copies into repos/<id>/).
+   *
+   * @param {{ repoPath: string, name?: string }} opts
+   * @returns {object} the created repo record
+   */
+  addRepoFromPath({ repoPath, name }) {
+    const srcPath = resolve(repoPath);
+    if (!existsSync(srcPath) || !statSync(srcPath).isDirectory()) {
+      throw new Error(`Repo path does not exist or is not a directory: ${srcPath}`);
+    }
+    const repo = this.addRepo({ name });
+    const destPath = resolve(this.#reposBaseDir, repo.id);
+    cpSync(srcPath, destPath, { recursive: true });
+    return repo;
+  }
+
+  getRepo(repoId) {
+    const repo = this.#repos.find((r) => r.id === repoId);
+    return repo ? { ...repo } : null;
+  }
+
+  getAllRepos() {
+    return this.#repos.map((r) => ({ ...r }));
+  }
+
+  /**
+   * Delete a repo record and its directory.
+   * Refuses if any pending/running task references this repo.
+   *
+   * @param {string} repoId
+   * @returns {boolean} true if deleted
+   */
+  deleteRepo(repoId) {
+    const idx = this.#repos.findIndex((r) => r.id === repoId);
+    if (idx === -1) return false;
+
+    const inUse = this.#tasks.some(
+      (t) => t.repoId === repoId && (t.status === Status.PENDING || t.status === Status.RUNNING),
+    );
+    if (inUse) {
+      throw new Error(`Repo ${repoId} is referenced by pending/running tasks`);
+    }
+
+    this.#repos.splice(idx, 1);
+    const repoDir = resolve(this.#reposBaseDir, repoId);
+    if (existsSync(repoDir)) {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+    this.#persist();
+    return true;
+  }
+
+  // ─── Task Management ─────────────────────────────────────────
+
+  #generateTaskId() {
+    const num = this.#nextTaskId++;
     return `task-${String(num).padStart(3, "0")}`;
   }
 
   /**
-   * Add a new task.
+   * Add a new task referencing an existing repo.
    *
-   * - `repoPath`: any local directory path; will be copied into repos/<task-id>/
-   * - `repo`: an existing directory name inside reposBaseDir (used by server ZIP upload)
-   *
-   * At least one of repoPath or repo must be provided.
-   *
-   * @param {{ prompt: string, repoPath?: string, repo?: string, model?: string }} opts
+   * @param {{ prompt: string, repoId: string, model?: string }} opts
    * @returns {object} the created task
    */
-  addTask({ prompt, repoPath, repo, model }) {
+  addTask({ prompt, repoId, model }) {
     if (!prompt) throw new Error("prompt is required");
-
-    const id = this.#generateId();
-
-    if (repoPath) {
-      const srcPath = resolve(repoPath);
-      if (!existsSync(srcPath) || !statSync(srcPath).isDirectory()) {
-        throw new Error(`Repo path does not exist or is not a directory: ${srcPath}`);
-      }
-      const destPath = resolve(this.#reposBaseDir, id);
-      cpSync(srcPath, destPath, { recursive: true });
-      repo = id;
+    if (!repoId) throw new Error("repo_id is required");
+    if (!this.getRepo(repoId)) {
+      throw new Error(`Repo not found: ${repoId}`);
     }
 
-    if (!repo) repo = id;
-
+    const id = this.#generateTaskId();
     const task = {
       id,
       prompt,
-      repo,
+      repoId,
       model: model || undefined,
       status: Status.PENDING,
       createdAt: new Date().toISOString(),
@@ -105,7 +172,8 @@ export class TaskQueue {
   /**
    * Import tasks from a JSON file.
    * Format: { "tasks": [{ "prompt": "...", "repo": "/any/path" }, ...] }
-   * Each task's repo is treated as a repoPath and copied into repos/<task-id>/.
+   * Each task's repo is treated as a local path, uploaded as a new repo,
+   * then a task is created referencing it.
    *
    * @param {string} filePath
    * @returns {number} number of tasks imported
@@ -140,7 +208,8 @@ export class TaskQueue {
       if (promptText == null || promptText === "") {
         throw new Error(`Task must have "prompt" or "promptFile" with non-empty content. Entry: ${JSON.stringify(t)}`);
       }
-      this.addTask({ prompt: promptText, repoPath: t.repo, model: t.model });
+      const repo = this.addRepoFromPath({ repoPath: t.repo, name: t.repoName });
+      this.addTask({ prompt: promptText, repoId: repo.id, model: t.model });
       count++;
     }
     return count;
@@ -153,6 +222,15 @@ export class TaskQueue {
     task.startedAt = new Date().toISOString();
     this.#persist();
     return task;
+  }
+
+  startTask(taskId) {
+    const task = this.#findTask(taskId);
+    if (!task || task.status !== Status.PENDING) return null;
+    task.status = Status.RUNNING;
+    task.startedAt = new Date().toISOString();
+    this.#persist();
+    return { ...task };
   }
 
   complete(taskId, result) {
@@ -238,8 +316,34 @@ export class TaskQueue {
       .map(({ status, ...rest }) => rest);
   }
 
+  hasRunningTasks() {
+    return this.#tasks.some((t) => t.status === Status.RUNNING);
+  }
+
+  /**
+   * Purge all tasks, repos and reset both ID counters to 1.
+   * Caller is responsible for cleaning up results/ directory.
+   *
+   * @throws {Error} if any task is currently running
+   */
+  purge() {
+    if (this.hasRunningTasks()) {
+      throw new Error("Cannot purge while tasks are running");
+    }
+    this.#tasks = [];
+    this.#repos = [];
+    this.#nextTaskId = 1;
+    this.#nextRepoId = 1;
+    this.#persist();
+  }
+
   #persist() {
-    const data = { nextId: this.#nextId, tasks: this.#tasks };
+    const data = {
+      nextTaskId: this.#nextTaskId,
+      nextRepoId: this.#nextRepoId,
+      repos: this.#repos,
+      tasks: this.#tasks,
+    };
     mkdirSync(dirname(this.#statePath), { recursive: true });
     writeFileSync(this.#statePath, JSON.stringify(data, null, 2));
   }

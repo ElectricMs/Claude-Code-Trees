@@ -3,7 +3,7 @@
 /**
  * 验证 API 配置是否正确，Claude Code 能否正常运行。
  *
- * 用法: node scripts/test-api.js
+ * 用法: node test/test-api.js
  */
 
 import { loadConfig } from "../src/config.js";

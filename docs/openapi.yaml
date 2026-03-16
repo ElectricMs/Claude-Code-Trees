@@ -2,9 +2,9 @@ openapi: 3.0.3
 info:
   title: Claude Code Trees API
   description: |
-    多 Claude Code 实例并行编排服务。提供任务队列、Worker 状态查询与控制接口。
+    多 Claude Code 实例并行编排服务。提供代码库管理、任务队列、Worker 状态查询与控制接口。
     服务默认地址 http://localhost:3000（可通过 SERVER_HOST、SERVER_PORT 配置）。
-  version: 1.0.0
+  version: 2.0.0
 
 servers:
   - url: http://localhost:3000
@@ -13,10 +13,14 @@ servers:
 tags:
   - name: 状态与配置
     description: 队列与配置查询
+  - name: 代码库
+    description: 代码库的增删查
   - name: 任务
     description: 任务的增删改查与重试
   - name: Worker
     description: Worker 暂停/恢复/终止
+  - name: 运维
+    description: 数据清理与重置
 
 paths:
   /api/status:
@@ -47,6 +51,110 @@ paths:
               schema:
                 $ref: "#/components/schemas/ConfigResponse"
 
+  # ─── 代码库 ──────────────────────────────────────────────
+
+  /api/repos:
+    get:
+      tags: [代码库]
+      summary: 获取代码库列表
+      operationId: listRepos
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepoListResponse"
+    post:
+      tags: [代码库]
+      summary: 上传代码库
+      description: |
+        上传代码库 ZIP 文件并解压存放到 `repos/{repo-id}/`。
+        代码库 ID 自增分配（repo-001, repo-002, ...）。
+        可选提供 `name` 作为显示名称，默认使用 ID。
+      operationId: createRepo
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 代码库 ZIP 文件
+                name:
+                  type: string
+                  description: 可选的代码库显示名称
+      responses:
+        "200":
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepoDetailResponse"
+        "400":
+          description: 未上传 ZIP 文件
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: 解压失败
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /api/repos/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, example: "repo-001" }
+        description: 代码库 ID
+    get:
+      tags: [代码库]
+      summary: 获取代码库详情
+      operationId: getRepo
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RepoDetailResponse"
+        "404":
+          description: 代码库不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    delete:
+      tags: [代码库]
+      summary: 删除代码库
+      description: |
+        删除代码库记录及其目录。
+        如有 pending/running 状态的任务引用该代码库，则拒绝删除。
+      operationId: deleteRepo
+      responses:
+        "200":
+          description: 删除成功
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OkResponse" }
+        "400":
+          description: 代码库被任务引用，无法删除
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: 代码库不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  # ─── 任务 ──────────────────────────────────────────────
+
   /api/tasks:
     get:
       tags: [任务]
@@ -63,23 +171,25 @@ paths:
     post:
       tags: [任务]
       summary: 创建任务
-      description: 上传代码库 ZIP 与提示词，创建新任务。ZIP 解压到 repos/{task-id}/，ID 自增分配。
+      description: |
+        创建新任务，引用已上传的代码库。
+        传入 `repo_id` 指定要分析的代码库，`prompt` 为分析指令。
       operationId: createTask
       requestBody:
         required: true
         content:
-          multipart/form-data:
+          application/json:
             schema:
               type: object
-              required: [file, prompt]
+              required: [prompt, repo_id]
               properties:
-                file:
-                  type: string
-                  format: binary
-                  description: 代码库 ZIP 文件
                 prompt:
                   type: string
                   description: 分析指令 / 提示词
+                repo_id:
+                  type: string
+                  description: 代码库 ID（如 repo-001）
+                  example: "repo-001"
                 model:
                   type: string
                   description: 覆盖默认模型（如 sonnet、opus）
@@ -91,12 +201,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TaskDetailResponse"
         "400":
-          description: 缺少 prompt 或未上传 ZIP
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ErrorResponse" }
-        "500":
-          description: 解压或写入失败
+          description: 缺少必填参数或代码库不存在
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -167,6 +272,107 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
 
+  /api/tasks/sse:
+    post:
+      tags: [任务]
+      summary: 创建任务，完成后回调投递结果
+      description: |
+        创建任务后**立即返回** JSON 响应。任务在后台异步处理，完成后
+        自动将结果以 SSE 格式 POST 到 `{CALLBACK_BASE_URL}/api/v1/ai-stream-card/{user_id}`。
+
+        **回调请求格式**：
+        ```
+        POST /api/v1/ai-stream-card/{user_id}
+        Content-Type: text/event-stream
+
+        data: {"content":"完整输出内容"}\n\n
+        ```
+      operationId: createTaskSSECallback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, prompt, repo_id]
+              properties:
+                user_id:
+                  type: string
+                  description: 用户 ID，用于构造回调地址
+                prompt:
+                  type: string
+                  description: 分析指令 / 提示词
+                repo_id:
+                  type: string
+                  description: 代码库 ID
+                  example: "repo-001"
+                model:
+                  type: string
+                  description: 覆盖默认模型
+      responses:
+        "200":
+          description: 任务创建成功（后台异步处理，结果通过回调投递）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskDetailResponse"
+        "400":
+          description: 请求参数校验失败
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SSEErrorResponse" }
+
+  /api/tasks/sse2:
+    post:
+      tags: [任务]
+      summary: 创建任务并 SSE 流式返回结果
+      description: |
+        创建任务后立即切换为 SSE（Server-Sent Events）流式响应。
+        客户端可实时接收 Claude 输出的增量文本。
+
+        ### SSE 事件格式
+
+        | type | 说明 |
+        |------|------|
+        | `task_created` | 任务创建成功 |
+        | _(无 type)_ | 流式增量内容，仅含 `content` 字段 |
+        | `task_complete` | 任务执行完成 |
+        | `task_error` | 任务执行失败 |
+      operationId: createTaskSSE2
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt, repo_id]
+              properties:
+                prompt:
+                  type: string
+                  description: 分析指令 / 提示词
+                repo_id:
+                  type: string
+                  description: 代码库 ID
+                  example: "repo-001"
+                model:
+                  type: string
+                  description: 覆盖默认模型
+      responses:
+        "200":
+          description: SSE 流式响应
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "SSE 流，每条事件为 data: <JSON>\\n\\n。"
+        "400":
+          description: 请求参数校验失败
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SSEErrorResponse" }
+
+  # ─── Worker ────────────────────────────────────────────
+
   /api/workers/pause:
     post:
       tags: [Worker]
@@ -230,6 +436,37 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/OkResponse" }
 
+  # ─── 运维 ──────────────────────────────────────────────
+
+  /api/purge:
+    post:
+      tags: [运维]
+      summary: 清空所有运行数据
+      description: |
+        删除所有代码库、结果文件，清空任务队列，
+        将任务序号和代码库序号均重置为 1。
+
+        如有任务正在执行中则拒绝操作。
+
+        **CLI 等效命令**：`npx claude-code-trees purge [--force]`
+      operationId: purge
+      responses:
+        "200":
+          description: 清空成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, message]
+                properties:
+                  ok: { type: boolean, example: true }
+                  message: { type: string, example: "All tasks, repos and results have been purged. ID counters reset to 1." }
+        "400":
+          description: 有任务正在执行，无法清空
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
 components:
   schemas:
     OkResponse:
@@ -244,6 +481,52 @@ components:
       properties:
         ok: { type: boolean, example: false }
         error: { type: string, description: 错误描述 }
+
+    SSEErrorResponse:
+      type: object
+      description: SSE 接口的结构化错误响应
+      required: [ok, error, code, phase]
+      properties:
+        ok: { type: boolean, example: false }
+        error: { type: string, description: 人类可读的错误描述 }
+        code:
+          type: string
+          enum:
+            - MISSING_USER_ID
+            - MISSING_PROMPT
+            - MISSING_REPO_ID
+            - TASK_TIMEOUT
+            - TASK_FAILED
+            - DOCKER_ERROR
+            - STREAM_CANCELLED
+            - INTERNAL_ERROR
+        phase:
+          type: string
+          enum: [validation, processing, unknown]
+        taskId: { type: string, nullable: true }
+
+    RepoSummary:
+      type: object
+      properties:
+        id: { type: string, example: "repo-001" }
+        name: { type: string, example: "fastapi" }
+        createdAt: { type: string, format: date-time }
+
+    RepoListResponse:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean, example: true }
+        data:
+          type: array
+          items: { $ref: "#/components/schemas/RepoSummary" }
+
+    RepoDetailResponse:
+      type: object
+      required: [ok, data]
+      properties:
+        ok: { type: boolean, example: true }
+        data: { $ref: "#/components/schemas/RepoSummary" }
 
     QueueStatus:
       type: object
@@ -262,9 +545,8 @@ components:
         status:
           type: string
           enum: [idle, running, paused]
-          description: idle 空闲 / running 执行中 / paused 已暂停
-        taskId: { type: string, nullable: true, description: 当前任务 ID }
-        taskPrompt: { type: string, nullable: true, description: 当前任务提示词 }
+        taskId: { type: string, nullable: true }
+        taskPrompt: { type: string, nullable: true }
         elapsed: { type: integer, nullable: true, description: 当前任务已运行毫秒数 }
 
     StatusResponse:
@@ -280,7 +562,7 @@ components:
             workers:
               type: array
               items: { $ref: "#/components/schemas/WorkerState" }
-            paused: { type: boolean, description: 是否已暂停 }
+            paused: { type: boolean }
 
     ConfigData:
       type: object
@@ -303,7 +585,7 @@ components:
       properties:
         id: { type: string, example: "task-001" }
         prompt: { type: string }
-        repo: { type: string }
+        repoId: { type: string, example: "repo-001", description: 引用的代码库 ID }
         model: { type: string, nullable: true }
         status:
           type: string
