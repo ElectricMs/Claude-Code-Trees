@@ -7,7 +7,11 @@
 
 FROM hub-mirror.c.163.com/library/node:20-slim
 
-RUN npm install -g @anthropic-ai/claude-code
+# 使用 npm 镜像源，避免 install 卡住
+RUN npm config set registry https://registry.npmmirror.com && \
+    npm config set fetch-timeout 120000 && \
+    npm config set fetch-retries 5 && \
+    npm install -g @anthropic-ai/claude-code --no-audit --no-fund
 
 WORKDIR /workspace
 

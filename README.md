@@ -56,6 +56,8 @@ npm install
 
 # 构建 Docker 沙箱镜像
 docker build -t claude-code-sandbox .
+# 若 npm 拉取失败
+docker build -f Dockerfile.mirror -t claude-code-sandbox .
 
 # 若 Docker Hub 不可达，可使用增量 Patch 构建（需本地已有基础镜像）：
 npm run docker:build:patch
