@@ -11,7 +11,7 @@
  */
 
 import { loadConfig } from "../src/config.js";
-import { runClaude, checkDockerAvailable, checkDockerImage } from "../src/claude-runner.js";
+import { runClaude, checkDockerAvailable, checkDockerImage, checkNativeClaudeAvailable } from "../src/claude-runner.js";
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -42,14 +42,20 @@ async function main() {
     process.exit(1);
   }
 
-  if (!(await checkDockerAvailable())) {
-    console.error("  ✗ Docker 不可用");
-    process.exit(1);
-  }
-
-  if (!(await checkDockerImage(config.dockerImage))) {
-    console.error(`  ✗ 镜像 "${config.dockerImage}" 不存在`);
-    process.exit(1);
+  if (config.agentMode === "docker") {
+    if (!(await checkDockerAvailable())) {
+      console.error("  ✗ Docker 不可用");
+      process.exit(1);
+    }
+    if (!(await checkDockerImage(config.dockerImage))) {
+      console.error(`  ✗ 镜像 "${config.dockerImage}" 不存在`);
+      process.exit(1);
+    }
+  } else {
+    if (!(await checkNativeClaudeAvailable(config.nativeClaudeCmd))) {
+      console.error(`  ✗ Native 命令 "${config.nativeClaudeCmd}" 不可用`);
+      process.exit(1);
+    }
   }
 
   const task = {
@@ -61,10 +67,11 @@ async function main() {
   };
 
   console.log(`  代码库:  repos/${task.repoId}`);
+  console.log(`  模式:    ${config.agentMode}`);
   console.log(`  模型:    ${task.model}`);
   console.log(`  超时:    ${task.timeoutMs / 1000}s`);
   console.log(`  提示词:  ${task.prompt}`);
-  console.log(`\n  → 启动 Claude Code 容器...\n`);
+  console.log(`\n  → 启动 Claude Code ${config.agentMode === "docker" ? "容器" : "进程"}...\n`);
 
   const startTime = Date.now();
 

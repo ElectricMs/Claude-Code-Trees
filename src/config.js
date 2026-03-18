@@ -22,7 +22,12 @@ export function loadConfig(cliOpts = {}) {
     cliOpts.output || process.env.RESULTS_DIR || "./results",
   );
 
+  const agentMode = (
+    cliOpts.agentMode || process.env.AGENT_MODE || "docker"
+  ).toLowerCase();
+
   const config = Object.freeze({
+    agentMode,
     apiKey: process.env.ANTHROPIC_API_KEY || "",
     baseUrl: process.env.ANTHROPIC_BASE_URL || "",
     model: cliOpts.model || process.env.CLAUDE_MODEL || "sonnet",
@@ -44,6 +49,9 @@ export function loadConfig(cliOpts = {}) {
     apiTimeoutMs: process.env.API_TIMEOUT_MS || "",
     // Base URL for the callback endpoint used by /api/tasks/sse
     callbackBaseUrl: process.env.CALLBACK_BASE_URL || "",
+    // Native mode: command to invoke Claude Code (split by spaces for spawn)
+    nativeClaudeCmd:
+      process.env.NATIVE_CLAUDE_CMD || "claude",
   });
 
   return config;
@@ -55,6 +63,11 @@ export function loadConfig(cliOpts = {}) {
 export function validateConfig(config) {
   const errors = [];
 
+  if (!["docker", "native"].includes(config.agentMode)) {
+    errors.push(
+      `AGENT_MODE must be "docker" or "native", got "${config.agentMode}"`,
+    );
+  }
   if (!config.apiKey) {
     errors.push(
       "ANTHROPIC_API_KEY is required. Set it in .env or as an environment variable.",

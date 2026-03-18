@@ -17,7 +17,7 @@ const program = new Command();
 
 program
   .name("claude-code-trees")
-  .description("Multi-agent parallel orchestration for Claude Code with Docker isolation")
+  .description("Multi-agent parallel orchestration for Claude Code (Docker / Native)")
   .option("--env-file <path>", "Path to .env file", ".env");
 
 // ─── repo add ────────────────────────────────────────────
@@ -119,7 +119,7 @@ program
 // ─── status ───────────────────────────────────────────────
 program
   .command("status")
-  .description("Show queue status and active Docker containers")
+  .description("Show queue status and active agents")
   .action(() => {
     try {
       const config = loadConfig({ envFile: program.opts().envFile });
@@ -128,6 +128,7 @@ program
       const repos = queue.getAllRepos();
 
       console.log("\n=== Queue Status ===\n");
+      console.log(`  Mode      : ${config.agentMode}`);
       console.log(`  Total     : ${s.total}`);
       console.log(`  Pending   : ${s.pending}`);
       console.log(`  Running   : ${s.running}`);
@@ -136,20 +137,22 @@ program
       console.log(`  Cancelled : ${s.cancelled}`);
       console.log(`  Repos     : ${repos.length}`);
 
-      try {
-        const containers = execFileSync("docker", [
-          "ps", "--filter", "name=claude-", "--format", "{{.Names}}\t{{.Status}}",
-        ]).toString().trim();
-        if (containers) {
-          console.log("\n=== Active Containers ===\n");
-          for (const line of containers.split("\n")) {
-            console.log(`  ${line}`);
+      if (config.agentMode === "docker") {
+        try {
+          const containers = execFileSync("docker", [
+            "ps", "--filter", "name=claude-", "--format", "{{.Names}}\t{{.Status}}",
+          ]).toString().trim();
+          if (containers) {
+            console.log("\n=== Active Containers ===\n");
+            for (const line of containers.split("\n")) {
+              console.log(`  ${line}`);
+            }
+          } else {
+            console.log("\n  No active Claude containers.");
           }
-        } else {
-          console.log("\n  No active Claude containers.");
+        } catch {
+          console.log("\n  (Docker not available — cannot list containers)");
         }
-      } catch {
-        console.log("\n  (Docker not available — cannot list containers)");
       }
 
       console.log();

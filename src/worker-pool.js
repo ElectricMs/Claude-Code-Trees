@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { runClaude, runClaudeStreaming, forceRemoveContainer } from "./claude-runner.js";
-import { execFile } from "node:child_process";
 
 /**
  * Persistent worker pool that continuously processes tasks from a queue.
@@ -46,6 +45,7 @@ export class WorkerPool extends EventEmitter {
         taskPrompt: null,
         containerName: null,
         startedAt: null,
+        _abort: null,
         _loop: null,
       };
       this.#workers.push(worker);
@@ -61,20 +61,17 @@ export class WorkerPool extends EventEmitter {
     this.#paused = false;
   }
 
-  async forceKill(workerId) {
+  forceKill(workerId) {
     const w = this.#workers.find((w) => w.id === workerId);
-    if (!w || w.status !== "running" || !w.containerName) return false;
-    try {
-      await dockerKill(w.containerName);
-    } catch { /* container may already be gone */ }
+    if (!w || w.status !== "running" || !w._abort) return false;
+    w._abort.abort();
     return true;
   }
 
-  async forceKillAll() {
-    const kills = this.#workers
-      .filter((w) => w.status === "running" && w.containerName)
-      .map((w) => dockerKill(w.containerName).catch(() => {}));
-    await Promise.all(kills);
+  forceKillAll() {
+    for (const w of this.#workers) {
+      if (w.status === "running" && w._abort) w._abort.abort();
+    }
   }
 
   getStates() {
@@ -139,6 +136,8 @@ export class WorkerPool extends EventEmitter {
       worker.taskPrompt = task.prompt;
       worker.startedAt = Date.now();
       worker.containerName = null;
+      const ac = new AbortController();
+      worker._abort = ac;
       this.emit("worker:busy", worker.id, task.id);
 
       log(`Starting task ${task.id} (repo: ${task.repoId})`);
@@ -151,6 +150,7 @@ export class WorkerPool extends EventEmitter {
         if (streaming) {
           claudeResult = await runClaudeStreaming(task, this.#config, {
             workerId: String(worker.id),
+            signal: ac.signal,
             onData: (line) => {
               try { listener.onData(line); } catch { /* SSE handler may be gone */ }
             },
@@ -158,6 +158,7 @@ export class WorkerPool extends EventEmitter {
         } else {
           claudeResult = await runClaude(task, this.#config, {
             workerId: String(worker.id),
+            signal: ac.signal,
           });
         }
         worker.containerName = claudeResult.containerName;
@@ -208,6 +209,7 @@ export class WorkerPool extends EventEmitter {
       worker.taskId = null;
       worker.taskPrompt = null;
       worker.containerName = null;
+      worker._abort = null;
       worker.startedAt = null;
       this.emit("worker:idle", worker.id);
     }
@@ -242,15 +244,6 @@ export class WorkerPool extends EventEmitter {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-function dockerKill(containerName) {
-  return new Promise((res, rej) => {
-    execFile("docker", ["kill", containerName], (err) => {
-      if (err) return rej(err);
-      res();
-    });
-  });
 }
 
 /**

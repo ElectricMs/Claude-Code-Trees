@@ -11,7 +11,7 @@ import unzipper from "unzipper";
 import { loadConfig } from "./config.js";
 import { TaskQueue } from "./task-queue.js";
 import { WorkerPool } from "./worker-pool.js";
-import { checkDockerAvailable, checkDockerImage } from "./claude-runner.js";
+import { checkDockerAvailable, checkDockerImage, checkNativeClaudeAvailable } from "./claude-runner.js";
 
 const config = loadConfig({ envFile: ".env" });
 const port = parseInt(process.env.SERVER_PORT || "3000", 10);
@@ -94,16 +94,19 @@ app.get("/api/status", async (_req, res) => {
 });
 
 app.get("/api/config", (_req, res) => {
-  res.json({
-    ok: true,
-    data: {
-      model: config.model,
-      concurrency: config.concurrency,
-      timeoutMs: config.timeoutMs,
-      dockerImage: config.dockerImage,
-      allowedTools: config.allowedTools,
-    },
-  });
+  const data = {
+    agentMode: config.agentMode,
+    model: config.model,
+    concurrency: config.concurrency,
+    timeoutMs: config.timeoutMs,
+    allowedTools: config.allowedTools,
+  };
+  if (config.agentMode === "docker") {
+    data.dockerImage = config.dockerImage;
+  } else {
+    data.nativeClaudeCmd = config.nativeClaudeCmd;
+  }
+  res.json({ ok: true, data });
 });
 
 // ─── Repos CRUD ───────────────────────────────────────────────
@@ -371,7 +374,7 @@ app.post("/api/tasks/sse2", (req, res) => {
       sendSSE({
         type: "task_error", ok: false,
         error: err.message || "Task processing failed",
-        code: isCancel ? "STREAM_CANCELLED" : "DOCKER_ERROR",
+        code: isCancel ? "STREAM_CANCELLED" : "RUNNER_ERROR",
         phase: "processing", taskId,
       });
       res.end();
@@ -439,21 +442,32 @@ app.post("/api/purge", async (_req, res) => {
 
 async function start() {
   console.log("\n=== Claude Code Trees — Server ===\n");
+  console.log(`  Agent mode: ${config.agentMode}`);
 
-  const dockerOk = await checkDockerAvailable();
-  if (!dockerOk) {
-    console.error("  ✗ Docker is not available");
-    process.exit(1);
-  }
-  console.log("  ✓ Docker daemon reachable");
+  if (config.agentMode === "docker") {
+    const dockerOk = await checkDockerAvailable();
+    if (!dockerOk) {
+      console.error("  ✗ Docker is not available");
+      process.exit(1);
+    }
+    console.log("  ✓ Docker daemon reachable");
 
-  const imageOk = await checkDockerImage(config.dockerImage);
-  if (!imageOk) {
-    console.error(`  ✗ Docker image "${config.dockerImage}" not found`);
-    console.error(`    Build it first: docker build -t ${config.dockerImage} .`);
-    process.exit(1);
+    const imageOk = await checkDockerImage(config.dockerImage);
+    if (!imageOk) {
+      console.error(`  ✗ Docker image "${config.dockerImage}" not found`);
+      console.error(`    Build it first: docker build -t ${config.dockerImage} .`);
+      process.exit(1);
+    }
+    console.log(`  ✓ Image "${config.dockerImage}" available`);
+  } else {
+    const cmdOk = await checkNativeClaudeAvailable(config.nativeClaudeCmd);
+    if (!cmdOk) {
+      console.warn(`  ⚠ Native command "${config.nativeClaudeCmd}" not found in PATH`);
+      console.warn("    Make sure Claude Code is installed (npm install -g @anthropic-ai/claude-code)");
+    } else {
+      console.log(`  ✓ Native command "${config.nativeClaudeCmd}" available`);
+    }
   }
-  console.log(`  ✓ Image "${config.dockerImage}" available`);
 
   pool.start(config.concurrency);
   console.log(`  ✓ ${config.concurrency} worker(s) started`);
