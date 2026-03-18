@@ -1,7 +1,7 @@
 {
   "name": "claude-code-trees",
   "version": "1.0.0",
-  "description": "Multi-agent parallel orchestration for Claude Code instances with Docker isolation",
+  "description": "Multi-agent parallel orchestration for Claude Code instances (Docker or Native mode)",
   "main": "src/index.js",
   "type": "module",
   "bin": {

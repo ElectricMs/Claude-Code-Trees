@@ -1,6 +1,6 @@
 # Claude Code Trees
 
-多 Claude Code 实例并行编排架构，支持在本地或服务器（如 EC2）中运行。每个实例在独立的 Docker 容器中以只读模式分析代码，通过共享持久化任务队列自动分配工作。代码库独立管理、按需复用，任务通过引用代码库 ID 创建。CLI 管理任务队列，Web 服务由 HTTP API 统一控制 Worker 的执行、暂停、终止等操作。
+多 Claude Code 实例并行编排架构，支持在本地或服务器（如 EC2）中运行。支持两种运行模式：**Docker 模式**（容器隔离）和 **Native 模式**（直接在系统环境运行，无需 Docker）。通过共享持久化任务队列自动分配工作，代码库独立管理、按需复用，任务通过引用代码库 ID 创建。CLI 管理任务队列，Web 服务由 HTTP API 统一控制 Worker 的执行、暂停、终止等操作。
 
 代码和README.md未经严格审查。
 
@@ -25,29 +25,56 @@
 │          │   WorkerPool    │ ← HTTP API 控制                  │
 │          │  worker 0..N    │   (pause / resume / kill)       │
 │          └───┬────┬────┬───┘                                 │
-│              │    │    │                                     │
+│              │    │    │           AGENT_MODE 决定运行方式      │
 │          ┌───▼┐ ┌▼───┐ ┌▼───┐                                │
 │          │ 🐳 │ │ 🐳 │ │ 🐳 │  Docker 容器 (:ro mount)         │
+│          └────┘ └────┘ └────┘  ─ 或 ─                        │
+│          ┌───▼┐ ┌▼───┐ ┌▼───┐                                │
+│          │ ⚡ │ │ ⚡ │ │ ⚡ │  Native 进程 (cwd=repo)          │
 │          └────┘ └────┘ └────┘                                │
 │                                                              │
 │         repos/repo-NNN/  ← 独立管理的代码库（可被多任务复用）     │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**双重权限隔离**：
+**两种运行模式**：
 
-- **第一层 — Docker 容器**：文件系统硬隔离，代码库以 `:ro` 只读挂载，容器内无法看到宿主机其他文件
-- **第二层 — 工具限制**：Claude Code 仅启用 `Read,Grep,Glob,LS` 只读工具集，无写入能力
+
+| 模式         | 隔离方式                    | 适用场景                  |
+| ---------- | ----------------------- | --------------------- |
+| **Docker** | 文件系统硬隔离，代码库以 `:ro` 只读挂载 | 生产环境、多租户、强安全要求        |
+| **Native** | 进程 `cwd` 限制 + 只读工具集     | 开发环境、无 Docker 环境、网络受限 |
+
+
+两种模式都通过 **工具限制** 保证安全：Claude Code 仅启用 `Read,Grep,Glob,LS` 只读工具集，无写入能力。
 
 ## 快速开始
 
 ### 前置条件
 
 - Node.js >= 18
-- Docker 已安装并运行
 - Anthropic API Key（或兼容的代理，如 BigModel/智谱AI）
+- **Docker 模式（可选）**：需要 Docker 已安装并运行
+- **Native 模式（可选）**：需要本机已安装 Claude Code（`npm install -g @anthropic-ai/claude-code`）
+
+> 两种模式至少选一种即可。如果网络环境无法拉取 Docker 镜像，推荐直接使用 **Native 模式**，跳过所有 Docker 步骤。
 
 ### 安装
+
+#### 方式一：Native 模式（推荐，无需 Docker）
+
+```bash
+git clone <repo-url> claude-code-trees
+cd claude-code-trees
+npm install
+
+# 确保系统已安装 Claude Code
+npm install -g @anthropic-ai/claude-code
+```
+
+完成后在 `.env` 中设置 `AGENT_MODE=native` 即可（详见下方配置）。
+
+#### 方式二：Docker 模式
 
 ```bash
 git clone <repo-url> claude-code-trees
@@ -62,6 +89,8 @@ docker build -f Dockerfile.mirror -t claude-code-sandbox .
 # 若 Docker Hub 不可达，可使用增量 Patch 构建（需本地已有基础镜像）：
 npm run docker:build:patch
 ```
+
+`.env` 中保持默认的 `AGENT_MODE=docker` 即可。
 
 ### 配置
 
@@ -84,8 +113,10 @@ cp .env.example .env
 | `RESULTS_DIR`         | 结果输出目录                       | `./results`                    |
 | `SERVER_PORT`         | Web Dashboard 端口             | `3000`                         |
 | `SERVER_HOST`         | Web Dashboard 监听地址           | `0.0.0.0`                      |
-| `DOCKER_IMAGE`        | Docker 镜像名                   | `claude-code-sandbox`          |
-| `DOCKER_MEMORY_LIMIT` | 容器内存限制（可选）                   | 无限制                            |
+| `AGENT_MODE`          | 运行模式：`docker` 或 `native`     | `docker`                       |
+| `DOCKER_IMAGE`        | Docker 镜像名（Docker 模式）        | `claude-code-sandbox`          |
+| `DOCKER_MEMORY_LIMIT` | 容器内存限制（Docker 模式，可选）         | 无限制                            |
+| `NATIVE_CLAUDE_CMD`   | Claude Code 命令（Native 模式）    | `claude`                       |
 | `ALLOWED_TOOLS`       | Claude Code 可用工具             | `Read,Grep,Glob,LS`            |
 | `CALLBACK_BASE_URL`   | SSE 回调地址（`/api/tasks/sse` 用） | `http://localhost:SERVER_PORT` |
 
@@ -96,7 +127,7 @@ cp .env.example .env
 npm run test:api
 ```
 
-脚本会依次检查 .env 加载、API Key、Docker 可用性、镜像存在，并执行一次最小 Claude Code 调用。
+脚本会根据当前 `AGENT_MODE` 自动检查对应环境（Docker 可用性或 Native 命令可用性），并执行一次最小 Claude Code 调用。
 
 ---
 
@@ -128,7 +159,7 @@ curl -X POST http://localhost:3000/api/tasks \
 
 ### Agent 概念
 
-本项目中 **Agent** 指：由 WorkerPool 管理的**工作线程（Worker）**，每个 Worker 从任务队列取任务，并为每个任务启动一个 **Docker 容器**，在容器内运行 **Claude Code** 对代码库执行只读分析。
+本项目中 **Agent** 指：由 WorkerPool 管理的**工作线程（Worker）**，每个 Worker 从任务队列取任务，并为每个任务启动一个 **Claude Code 实例**（Docker 模式下为容器，Native 模式下为系统进程）对代码库执行只读分析。
 
 ---
 
@@ -192,7 +223,7 @@ node src/index.js import --file import_example.json
 node src/index.js status
 ```
 
-输出队列统计（pending / running / completed / failed）、代码库数量和当前活跃的 Docker 容器列表。
+输出队列统计（pending / running / completed / failed）、代码库数量，Docker 模式下还会列出当前活跃的容器。
 
 ### 清空数据
 
@@ -369,7 +400,7 @@ claude-code-trees/
 │   ├── config.js             # 统一配置加载
 │   ├── task-queue.js         # 持久化任务队列 + 代码库注册表（data/state.json）
 │   ├── worker-pool.js        # Worker 池管理（HTTP API 控制）
-│   └── claude-runner.js      # Docker 容器生命周期管理
+│   └── claude-runner.js      # Claude Code 进程/容器生命周期管理（Docker + Native）
 ├── public/
 │   └── index.html            # Web Dashboard 前端
 ├── test/
@@ -396,14 +427,16 @@ claude-code-trees/
   - 任务分配自增 ID（`task-001`, `task-002`, ...）
 3. **执行任务**（`npm run serve` 启动服务后自动处理）：
   - WorkerPool 从队列 dequeue pending 任务
-  - 启动 Docker 容器，只读挂载对应 `repos/repo-NNN/`
-  - Claude Code 在容器内分析代码，返回结果
+  - **Docker 模式**：启动容器，只读挂载 `repos/repo-NNN/`；**Native 模式**：启动进程，cwd 设为 `repos/repo-NNN/`
+  - Claude Code 分析代码，返回结果
   - 结果写入 `data/state.json` 并保存到 `results/task-NNN.json`
 4. **控制**（HTTP API / Dashboard）：
   - 通过 HTTP API 直接调用 WorkerPool 内存方法（pause / resume / kill）
   - Dashboard 提供可视化操作界面
 
 ## 安全模型
+
+### Docker 模式
 
 每次任务执行时，一个全新的 Docker 容器被创建：
 
@@ -424,17 +457,37 @@ docker run --rm \
 - 非 root 用户运行 — 满足 Claude Code 安全要求
 - `--dangerously-skip-permissions` 仅在容器沙箱内使用
 
+### Native 模式
+
+每次任务执行时，临时 spawn 一个 Claude Code 进程：
+
+```bash
+# cwd 设为 repos/repo-NNN，Claude Code 以该目录为工作区
+claude -p --dangerously-skip-permissions \
+  --tools "Read,Grep,Glob,LS" \
+  --no-session-persistence \
+  --output-format json \
+  "分析指令..."
+```
+
+- 进程 `cwd` 限制为指定 repo 目录 — Claude Code 以该目录为工作根
+- `--tools` 限制为只读工具集 — 无写入能力
+- API Key 通过环境变量传入 — 不写入磁盘
+- 进程退出即结束 — 无常驻进程
+- 与 Docker 模式相比无文件系统硬隔离，适合受信环境或开发环境
+
 ## 错误处理
 
 
-| 场景           | 行为                                             |
-| ------------ | ---------------------------------------------- |
-| 容器超时         | SIGTERM → 10s 宽限 → SIGKILL，标记 `failed`         |
-| 容器非零退出       | 保存 stderr，标记 `failed`                          |
-| 代码库不存在       | 创建任务时校验并报错                                     |
-| Docker 镜像不存在 | `serve` 启动时提示构建命令                              |
-| Ctrl+C       | 停止取新任务，等待当前任务完成，清理容器                           |
-| 服务重启         | `data/state.json` 恢复队列，running 状态自动回退为 pending |
+| 场景                      | 行为                                                          |
+| ----------------------- | ----------------------------------------------------------- |
+| 任务超时                    | SIGTERM → 10s 宽限 → SIGKILL（Docker: stop → kill），标记 `failed` |
+| 非零退出                    | 保存 stderr，标记 `failed`                                       |
+| 代码库不存在                  | 创建任务时校验并报错                                                  |
+| Docker 镜像不存在（Docker 模式） | `serve` 启动时提示构建命令                                           |
+| Claude 命令不可用（Native 模式） | `serve` 启动时打印警告                                             |
+| Ctrl+C                  | 停止取新任务，等待当前任务完成，清理进程/容器                                     |
+| 服务重启                    | `data/state.json` 恢复队列，running 状态自动回退为 pending              |
 
 
 ## 故障排除
@@ -443,11 +496,12 @@ docker run --rm \
 
 无法访问 Docker Hub（网络受限）。可选方案：
 
-1. **使用增量 Patch 构建**（需本地已有基础镜像）：
+1. **直接使用 Native 模式**：跳过 Docker，在 `.env` 中设置 `AGENT_MODE=native`，确保本机已安装 Claude Code（`npm install -g @anthropic-ai/claude-code`）
+2. **使用增量 Patch 构建**（需本地已有基础镜像）：
   ```bash
    npm run docker:build:patch
   ```
-2. **配置 Docker 镜像加速**：Docker Desktop → Settings → Docker Engine 中添加 `registry-mirrors`
+3. **配置 Docker 镜像加速**：Docker Desktop → Settings → Docker Engine 中添加 `registry-mirrors`
 
 ### BigModel（智谱AI）代理配置
 
@@ -462,7 +516,7 @@ ANTHROPIC_DEFAULT_SONNET_MODEL=glm-4.7
 ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5
 ```
 
-容器内 `docker-entrypoint.sh` 会自动将这些变量写入 `~/.claude/settings.json`。
+Docker 模式下容器内 `docker-entrypoint.sh` 会自动将这些变量写入 `~/.claude/settings.json`。Native 模式下这些变量通过进程环境变量传入。
 
 ### API Key 验证失败（401）
 
