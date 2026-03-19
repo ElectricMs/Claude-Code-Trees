@@ -213,7 +213,7 @@ app.post("/api/tasks/sse", (req, res) => {
   let taskId = null;
 
   try {
-    const { prompt, repo_id, model, user_id } = req.body;
+    const { prompt, repo_id, user_id, is_sse } = req.body;
     if (!user_id) {
       return res.status(400).json({
         ok: false, error: "user_id is required",
@@ -233,14 +233,27 @@ app.post("/api/tasks/sse", (req, res) => {
       });
     }
 
-    const task = queue.addTask({ prompt, repoId: repo_id, model });
+    // default: true (keep old behavior for existing clients)
+    const useSse = is_sse !== false;
+
+    const task = queue.addTask({ prompt, repoId: repo_id });
     taskId = task.id;
 
     res.json({ ok: true, data: queue.getTask(task.id) });
 
-    processAndCallback(task.id, user_id).catch((err) => {
-      console.error(`[sse-callback] ${task.id} callback failed: ${err.message}`);
-    });
+    if (useSse) {
+      processAndCallback(task.id, user_id).catch((err) => {
+        console.error(
+          `[sse-callback] ${task.id} callback failed: ${err.message}`,
+        );
+      });
+    } else {
+      processAndSendMarkdown(task.id, user_id).catch((err) => {
+        console.error(
+          `[send-markdown] ${task.id} callback failed: ${err.message}`,
+        );
+      });
+    }
   } catch (err) {
     if (!res.headersSent) {
       res.status(400).json({
@@ -285,6 +298,55 @@ async function processAndCallback(taskId, userId) {
     method: "POST",
     headers: { "Content-Type": "text/event-stream" },
     body: sseBody,
+  });
+
+  if (!resp.ok) {
+    log(`callback responded ${resp.status}: ${await resp.text().catch(() => "")}`);
+  } else {
+    log("callback delivered successfully");
+  }
+}
+
+/**
+ * Wait for a task to finish, then POST the result as Markdown message.
+ *
+ * Ref: API_DOCUMENTATION.md — POST /api/v1/send-markdown
+ * Body: { user_id, title: "Claude Code回复", text }
+ */
+async function processAndSendMarkdown(taskId, userId) {
+  const log = (msg) => console.log(`[send-markdown] ${taskId} ${msg}`);
+
+  try {
+    await pool.awaitTask(taskId);
+  } catch {
+    // awaitTask rejects if cancelAwait is called; task may still complete via worker
+  }
+
+  const finalTask = queue.getTask(taskId);
+  if (!finalTask) {
+    log("task not found after processing");
+    return;
+  }
+
+  const callbackBase = config.callbackBaseUrl || `http://localhost:${port}`;
+  const sendMarkdownUrl = `${callbackBase}/api/v1/send-markdown`;
+
+  const answer = finalTask.status === "completed"
+    ? (finalTask.result || "")
+    : `[${finalTask.status}] ${finalTask.error || "Task did not complete successfully"}`;
+
+  const payload = {
+    user_id: userId,
+    title: "Claude Code回复",
+    text: answer,
+  };
+
+  log(`POSTing result to ${sendMarkdownUrl} (${JSON.stringify(payload).length} bytes)`);
+
+  const resp = await fetch(sendMarkdownUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
 
   if (!resp.ok) {

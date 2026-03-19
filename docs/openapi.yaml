@@ -278,7 +278,10 @@ paths:
       summary: 创建任务，完成后回调投递结果
       description: |
         创建任务后**立即返回** JSON 响应。任务在后台异步处理，完成后
-        自动将结果以 SSE 格式 POST 到 `{CALLBACK_BASE_URL}/api/v1/ai-stream-card/{user_id}`。
+        自动将结果根据 `is_sse` 进行回调投递：
+
+        - `is_sse=true`：以 SSE 格式 POST 到 `{CALLBACK_BASE_URL}/api/v1/ai-stream-card/{user_id}`
+        - `is_sse=false`：POST JSON 到 `{CALLBACK_BASE_URL}/api/v1/send-markdown`
 
         **回调请求格式**：
         ```
@@ -306,9 +309,9 @@ paths:
                   type: string
                   description: 代码库 ID
                   example: "repo-001"
-                model:
-                  type: string
-                  description: 覆盖默认模型
+                is_sse:
+                  type: boolean
+                  description: 是否走 SSE 回调（true：ai-stream-card；false：send-markdown）。默认 true。
       responses:
         "200":
           description: 任务创建成功（后台异步处理，结果通过回调投递）

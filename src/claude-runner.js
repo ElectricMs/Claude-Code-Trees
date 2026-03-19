@@ -1,11 +1,41 @@
 import { spawn, execFile } from "node:child_process";
 import { resolve } from "node:path";
 
+// ── System prompt (user prompt injected via {{USER_PROMPT}}) ─────
+
+const PLACEHOLDER_USER_PROMPT = "{{USER_PROMPT}}";
+
+const APPEND_SYSTEM_PROMPT_TEMPLATE = `你是一个代码库分析助手。本次会话请严格遵循以下要求。
+
+【任务要点】
+- 只读：仅可读取、搜索、列举代码与文件，不得修改、写入、删除任何文件或执行会改变系统的命令或创建测试代码。
+- 分析：对代码库进行结构化分析（如架构、依赖、关键逻辑、潜在问题）。
+- 给出修改意见：以文字形式给出改进建议、修复方案或优化思路，不直接改代码。
+
+【注意事项】
+- 回复使用**中文**。
+- 结论需有依据，**引用具体文件或代码位置**。
+- 若信息不足无法判断，请明确说明并指出需要补充的内容。
+
+用户本次任务：${PLACEHOLDER_USER_PROMPT}
+请时刻牢记注意事项回答。`;
+
+function buildAppendSystemPrompt(userPrompt) {
+  const safe = userPrompt != null ? String(userPrompt).trim() : "";
+  return APPEND_SYSTEM_PROMPT_TEMPLATE.replace(PLACEHOLDER_USER_PROMPT, safe);
+}
+
 // ── Shared helpers ──────────────────────────────────────
+
+/** Print-mode user message: trigger execution per system prompt. */
+const PRINT_MODE_USER_MESSAGE = "请根据系统提示中的用户任务要求执行分析并回复。";
 
 function buildClaudeArgs(task, config, outputFormat) {
   const model = task.model || config.model;
+  const appendPrompt = buildAppendSystemPrompt(task.prompt);
   return [
+    "--append-system-prompt",
+    appendPrompt,
     "-p",
     "--dangerously-skip-permissions",
     "--tools",
@@ -15,7 +45,7 @@ function buildClaudeArgs(task, config, outputFormat) {
     outputFormat,
     "--model",
     model,
-    task.prompt,
+    PRINT_MODE_USER_MESSAGE,
   ];
 }
 

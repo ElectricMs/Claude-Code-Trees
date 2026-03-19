@@ -292,7 +292,10 @@ curl -X POST http://localhost:3000/api/tasks \
 
 ### POST `/api/tasks/sse`
 
-创建任务并异步执行。任务完成后，服务端自动将结果以 SSE 格式 POST 到回调地址 `{CALLBACK_BASE_URL}/api/v1/ai-stream-card/{user_id}`。
+创建任务并异步执行。任务完成后，服务端根据 `is_sse` 选择回调投递方式：
+
+- `is_sse=true`（默认）：以 SSE 格式 POST 到回调地址 `{CALLBACK_BASE_URL}/api/v1/ai-stream-card/{user_id}`
+- `is_sse=false`：POST JSON 到 `{CALLBACK_BASE_URL}/api/v1/send-markdown`
 
 **请求**
 
@@ -304,7 +307,7 @@ curl -X POST http://localhost:3000/api/tasks \
 | `user_id` | string | 是 | 用户 ID，用于构建回调路径 |
 | `prompt` | string | 是 | 分析指令 / 提示词 |
 | `repo_id` | string | 是 | 代码库 ID |
-| `model` | string | 否 | 覆盖默认模型 |
+| `is_sse` | boolean | 否 | 是否使用 SSE 回调（默认 true）；false 时改用 send-markdown |
 
 **响应**：`200 OK`，立即返回任务创建信息。
 
@@ -321,11 +324,23 @@ curl -X POST http://localhost:3000/api/tasks \
 
 **回调投递**：任务完成后，服务端向回调地址发送：
 
+当 `is_sse=true`（默认）：
+
 ```
 POST /api/v1/ai-stream-card/{user_id}
 Content-Type: text/event-stream
 
 data: {"content":"完整分析结果..."}\n\n
+```
+
+当 `is_sse=false`：
+
+```json
+{
+  "user_id": "{user_id}",
+  "title": "Claude Code回复",
+  "text": "完整分析结果..."
+}
 ```
 
 **错误情况**

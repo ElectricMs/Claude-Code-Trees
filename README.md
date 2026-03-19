@@ -321,7 +321,7 @@ npm run serve
 
 ### SSE 回调接口：POST `/api/tasks/sse`
 
-创建任务后**立即返回** JSON。任务在后台异步处理，完成后自动将结果以 SSE 格式 POST 到回调地址。
+创建任务后**立即返回** JSON。任务在后台异步处理，完成后根据 `is_sse` 选择回调投递方式。
 
 **请求**（JSON）：
 
@@ -330,19 +330,31 @@ npm run serve
   "user_id": "user-123",
   "prompt": "分析代码中的安全漏洞",
   "repo_id": "repo-001",
-  "model": "sonnet"
+  "is_sse": true
 }
 ```
 
 **响应**：`200 OK`，立即返回任务信息。
 
-**回调投递**：任务完成后，服务端自动 POST 到 `{CALLBACK_BASE_URL}/api/v1/ai-stream-card/{user_id}`：
+**回调投递**：
+
+当 `is_sse=true` 时，任务完成后服务端自动 POST 到 `{CALLBACK_BASE_URL}/api/v1/ai-stream-card/{user_id}`：
 
 ```
 POST /api/v1/ai-stream-card/user-123
 Content-Type: text/event-stream
 
 data: {"content":"完整分析结果..."}\n\n
+```
+
+当 `is_sse=false` 时，任务完成后服务端自动 POST 到 `{CALLBACK_BASE_URL}/api/v1/send-markdown`，请求体仅包含 `user_id`、`title`、`text`：
+
+```json
+{
+  "user_id": "user-123",
+  "title": "Claude Code回复",
+  "text": "完整分析结果..."
+}
 ```
 
 **调用示例**：
